@@ -1,0 +1,14 @@
+# Compiled binaries in cmd/<name>/ and examples/<name>/cmd/<name>/ (named like their folder)
+/cmd/*/*
+!/cmd/*/*.go
+!/cmd/*/example.json
+/examples/*/cmd/*/*
+!/examples/*/cmd/*/*.go
+!/examples/*/cmd/*/example.json
+
+# Local program configs (NATS address, NKey path)
+/cmd/*/config.json
+/examples/*/cmd/*/config.json
+
+# Environment files with secrets
+*.env
