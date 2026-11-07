@@ -69,8 +69,19 @@
   splits the load, Success/Empty/Error outports, Run ID header, invalid JSON, `observe`/`trace` and
   shutdown on SIGTERM (instance disappears from `$SRV`) work.
 - Module path is now `github.com/555nase89/goFBP`, so the library can be fetched with `go get` (2026-11-06).
+- Performance tests: `pkg/fbp/bench_test.go` (chain latency/throughput, buffer size, payload size,
+  Fan-out, Concurrency I/O and CPU, Run tracking, Observer, nested Networks, Start) and
+  `pkg/service/bench_test.go` (Call, CallAll, parallel Calls, publish throughput over an embedded
+  nats-server); baseline numbers in `docs/performance.md`. `connect` and `upperNetwork` in the
+  service tests take `testing.TB` (2026-11-07).
 
 ## Open
+- `service.Call` allocates about 512 KB per call (`SubscribeSync` makes a channel of
+  `nats.DefaultMaxChanLen` entries) and is slower than `CallAll` (~750 µs vs. ~400 µs, see
+  `docs/performance.md`). Consider an async `Subscribe` or `ChanSubscribe` with a small channel.
+- `BenchmarkCallParallel` hung once until its 1-minute ctx expired (one Call got no result) in the
+  first full run on 2026-11-07; not reproduced in 27 further runs nor in 24 000 parallel Calls.
+  Watch for a lost result under parallel Calls.
 - `TestSetObserverWhileRunning` (pkg/fbp) is flaky under `-race`: about 1 in 20 runs reports an
   unexpected extra `Processed` Event right after switching the Observer (seen 2026-10-31).
 - `nats micro stats` always shows Processing Time 0s: the Service does not measure it. Decide whether

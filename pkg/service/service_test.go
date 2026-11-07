@@ -18,7 +18,7 @@ import (
 
 const timeout = 2 * time.Second
 
-func connect(t *testing.T) *nats.Conn {
+func connect(t testing.TB) *nats.Conn {
 	t.Helper()
 	srv, err := server.NewServer(&server.Options{Host: "127.0.0.1", Port: -1, NoLog: true, NoSigs: true})
 	if err != nil {
@@ -37,7 +37,7 @@ func connect(t *testing.T) *nats.Conn {
 	return nc
 }
 
-func upperNetwork(t *testing.T) *fbp.Network {
+func upperNetwork(t testing.TB) *fbp.Network {
 	t.Helper()
 	upper := &fbp.Brick{Name: "Upper", Process: func(ctx context.Context, p fbp.Packet, out fbp.Emitter) error {
 		var s string
