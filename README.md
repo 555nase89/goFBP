@@ -142,6 +142,7 @@ To test your own Bricks and Networks, use `pkg/fbptest`; see [docs/concept.md](d
 - [docs/concept.md](docs/concept.md): definition vs. runtime, writing Bricks, building and observing Networks.
 - [docs/service.md](docs/service.md): subjects, calling a Service, discovery, logs, delivery guarantees.
 - [docs/fbp-package.md](docs/fbp-package.md), [docs/service-package.md](docs/service-package.md): the types in each package.
+- [docs/claude-skills.md](docs/claude-skills.md): Claude Code skills that create Networks from a short arrow notation or an image and draw them as SVG.
 
 ## License
 

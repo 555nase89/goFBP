@@ -96,6 +96,9 @@ duplicate node names, duplicate connections, a Network containing itself). Diffe
 share a name, e.g. `text.Suffix("!")` and `text.Suffix("?")` in one Network. `Validate`, called by `Start`, checks the whole tree: every Network needs a name
 and every one of its Inports connected, and no Network may contain a cycle.
 
+To write the constructor from a few lines of arrow notation or from an image, see
+[claude-skills.md](claude-skills.md).
+
 ## Running an Instance
 
 ```go
