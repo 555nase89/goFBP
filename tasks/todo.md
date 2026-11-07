@@ -70,6 +70,7 @@
   shutdown on SIGTERM (instance disappears from `$SRV`) work.
 - Module path is now `github.com/555nase89/goFBP`, so the library can be fetched with `go get` (2026-11-06).
 
+- `README.md`: overview, quick start, examples and links to the docs (2026-11-06).
 - Review fixes (2026-11-07): `TestSetObserverWhileRunning` no longer flaky (waits for the end of
   the Run, not only the Output, before switching the Observer); a Service rejects Run IDs longer
   than 64 bytes (`service.MaxRunIDLength`); an invalid observe message is logged with its first
