@@ -514,3 +514,27 @@ func TestRejectKeepsRunGoingOn(t *testing.T) {
 		t.Fatalf("done %+v, %v", done, err)
 	}
 }
+
+// A message published on another connection right after Start returns must
+// reach the Service: Start flushes, so the server knows its subscriptions.
+func TestStartFlushesSubscriptions(t *testing.T) {
+	nc := connect(t)
+	client, err := nats.Connect(nc.ConnectedUrl())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	for i := range 50 {
+		s, err := Start(context.Background(), nc, "gofbp/test", upperNetwork(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		_, _, err = Call(ctx, client, s.Base(), []byte(`"hello"`))
+		cancel()
+		s.Stop()
+		if err != nil {
+			t.Fatalf("Call %d right after Start: %v", i, err)
+		}
+	}
+}

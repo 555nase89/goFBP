@@ -52,6 +52,8 @@ defer s.Stop()
   `service` is a random ID per Service: Packet IDs are counted per Instance, so `packet_id` and
   `parent_id` are only unique together with `service`. `s.SetObserver(fn)` sets a local Observer
   instead; the next message on `observe` replaces it.
+- When `Start` returns, the NATS server knows all subscriptions of the Service (`Start` flushes the
+  connection), so a message published right away, also on another connection, is not lost.
 - `Stop` unsubscribes (also from `$SRV`), stops the Instance and flushes the connection.
 - When the `ctx` given to `service.Start` is done, the Instance stops and the Service unsubscribes
   at once (also from `$SRV`), so the queue group no longer sends it messages. `Stop` must still be

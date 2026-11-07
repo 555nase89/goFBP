@@ -221,7 +221,8 @@ type EventData struct {
 // "gofbp/examples/text". Every Inport and Outport name of net must be a valid
 // subject token as well. An extra Inport must not be named "in", the subject
 // token of fbp.In, nor "observe", the name of the Observe endpoint on $SRV. Observing is off unless switched on by a message on the
-// Observe subject or by fbp.WithObserver in WithNetworkOptions. When ctx is
+// Observe subject or by fbp.WithObserver in WithNetworkOptions. When Start
+// returns, the NATS server knows all subscriptions of the Service. When ctx is
 // done, the Service unsubscribes from all subjects, also from $SRV; Stop must
 // still be called.
 func Start(ctx context.Context, nc *nats.Conn, packagePath string, net *fbp.Network, opts ...Option) (*Service, error) {
@@ -286,6 +287,11 @@ func Start(ctx context.Context, nc *nats.Conn, packagePath string, net *fbp.Netw
 			inports[i] = in.name
 		}
 		err = s.startDiscovery(net.Name, packagePath, inports, outports, cfg.version)
+	}
+	if err == nil {
+		// Once Start returns, the server must know the subscriptions;
+		// otherwise a message sent on another connection right away is lost.
+		err = nc.Flush()
 	}
 	if err != nil {
 		if s.obsSub != nil {

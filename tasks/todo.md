@@ -96,13 +96,17 @@
   `Start`/`Instance.Run`/`RunTo` (waits for the end of the Run via `WithRunFinished`, no sleeps),
   `Result.Want`/`WantError` (JSON comparison, order within an Outport ignored).
   `examples/text` and `examples/crash` tests use it.
+- `service.Start` flushes the connection before it returns (2026-11-07). Before, a message
+  published right after `Start` on another connection could reach the server before the Inport
+  subscription and was lost: the first Calls of `BenchmarkCallParallel` hung in about 1 of 8 runs
+  (`TestStartFlushesSubscriptions` failed within 50 Starts). Stress test `TestCallStress` (many
+  parallel Calls; on failure it reports where each lost Run stopped: before the Network, in it,
+  on the way back or in Call), flags `-stress.calls`, `-stress.workers`; skipped with `-short`.
+  `BenchmarkCallParallel` uses a timeout per Call.
 
 ## Open
 - Further test ideas: Network coverage via the Observer (Nodes/Outports never reached), generic
   fuzz invariants (every Run finishes, no Packet lost), replacing a Node by a stub, SVG drift check.
-- `BenchmarkCallParallel` hung once until its 1-minute ctx expired (one Call got no result) in the
-  first full run on 2026-11-07; not reproduced in 27 further runs nor in 24 000 parallel Calls.
-  Watch for a lost result under parallel Calls.
 - `nats micro stats` always shows Processing Time 0s: the Service does not measure it. Decide whether
   to report it (e.g. time from receive to the last Output of a Run) or leave it out.
 - Run tracking (`fbp.WithRunFinished`, always on in a Service) uses one mutex per Instance: two

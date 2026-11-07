@@ -66,17 +66,21 @@ func BenchmarkCallAll(b *testing.B) {
 }
 
 // BenchmarkCallParallel runs Calls from many goroutines at once over one
-// client connection.
+// client connection. Each Call has its own timeout, so a lost result is
+// reported with the time it was sent.
 func BenchmarkCallParallel(b *testing.B) {
 	client, s := benchService(b)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	start := time.Now()
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if _, _, err := Call(ctx, client, s.Base(), []byte(`"hello"`)); err != nil {
-				b.Error(err)
+			sent := time.Since(start)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_, _, err := Call(ctx, client, s.Base(), []byte(`"hello"`))
+			cancel()
+			if err != nil {
+				b.Errorf("Call sent %v after Start (b.N %d): %v", sent, b.N, err)
 				return
 			}
 		}

@@ -11,8 +11,8 @@ for the overall design, [service.md](service.md) for how a Service behaves and
 
 - `Service` wraps exactly one `fbp.Instance` and connects it to NATS. `Start(ctx, nc, pkg, net,
   opts...)` computes the base subject, starts the Instance with `fbp.WithOutput(s.publish)`,
-  subscribes to one subject per Network Inport and to the Observe subject and starts the
-  discovery. `id` is a random ID per
+  subscribes to one subject per Network Inport and to the Observe subject, starts the
+  discovery and flushes, so the server knows all subscriptions when `Start` returns. `id` is a random ID per
   Service; it is reported on `$SRV` and as `EventData.Service` (`s.ID()`).
 - `Option` is a `func(*config)`; `Start` applies all of them to a `config` with the defaults
   (`slog.Default()`, `DefaultPendingMsgs`, `DefaultPendingBytes`, `DefaultVersion`,
