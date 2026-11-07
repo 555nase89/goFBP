@@ -103,6 +103,8 @@
   parallel Calls; on failure it reports where each lost Run stopped: before the Network, in it,
   on the way back or in Call), flags `-stress.calls`, `-stress.workers`; skipped with `-short`.
   `BenchmarkCallParallel` uses a timeout per Call.
+- Claude skill `fbp-network-from-text`: Network constructor from an arrow notation in a `.fbp`
+  file; all skills documented in `docs/claude-skills.md` (2026-11-07).
 
 ## Open
 - Further test ideas: Network coverage via the Observer (Nodes/Outports never reached), generic

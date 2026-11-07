@@ -31,8 +31,8 @@ checkevent.Invalid > Rejected
   Inport → `Inports` + `n.ConnectInport`.
 - **Letztes Element ein Netzwerk-Port:** `Success`/`Error` → `n.ConnectOut(.., fbp.Success/fbp.Error)`; jeder andere =
   eigener Outport → `Outports` + `n.ConnectOut`.
-- **Anderer Inport des Ziel-Bricks:** `Inport:brick`, z. B. `a.Out > Left:join` → `n.ConnectTo("a", "Out", "join", "Left")`.
-  Ohne Angabe: Inport `In`.
+- **Anderer Inport eines verschachtelten Networks:** `Inport:knoten`, z. B. `a.Out > Other:nested` →
+  `n.ConnectTo("a", "Out", "nested", "Other")`. Ohne Angabe: Inport `In` (Bricks haben nur diesen).
 - **`*.Error > Error`**: der `Error` jedes Knotens geht auf den Netzwerk-`Error`. Analog `*.<Outport> > <Port>` für
   alle Knoten, die diesen Outport haben.
 - **Fan-out:** mehrere Zeilen mit demselben Anfang (`IN > a` und `IN > b`).
