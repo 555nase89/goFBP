@@ -53,8 +53,13 @@ func (out *Outport) receive(ctx context.Context, p Packet) error {
 	}
 	if len(out.targets) == 0 {
 		if out.name == Error {
-			out.logger.Warn("fbp: error packet on unconnected outport",
-				"node", out.node, "outport", out.name, "run_id", p.RunID, "data", string(p.Data))
+			// The data may hold anything a Packet carries, so only the
+			// size and, for ErrorData, the error itself are logged.
+			attrs := []any{"node", out.node, "outport", out.name, "run_id", p.RunID, "size", len(p.Data)}
+			if ed, err := DataAs[ErrorData](p); err == nil && ed.Message != "" {
+				attrs = append(attrs, "error_node", ed.Node, "brick", ed.Brick, "message", ed.Message)
+			}
+			out.logger.Warn("fbp: error packet on unconnected outport", attrs...)
 		}
 		return nil
 	}

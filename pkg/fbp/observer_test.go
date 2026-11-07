@@ -176,12 +176,20 @@ func TestSetObserverWhileRunning(t *testing.T) {
 	must(t, n.ConnectOut("upper", Success, Success))
 
 	out, results := collector()
-	inst := start(t, n, WithOutput(out))
+	finished := make(chan string, 10)
+	inst := start(t, n, WithOutput(out), WithRunFinished(func(runID string, _ int) { finished <- runID }))
 	send := func(data string) {
 		t.Helper()
 		_, err := inst.Send(context.Background(), Packet{Data: str(data), RunID: "r"})
 		must(t, err)
 		next(t, results)
+		// The Output comes before the Brick's Processed Event; wait for the
+		// end of the Run, so no Event of this Packet arrives after switching.
+		select {
+		case <-finished:
+		case <-time.After(timeout):
+			t.Fatal("timeout waiting for the end of the Run")
+		}
 	}
 	fn, ch := observed()
 

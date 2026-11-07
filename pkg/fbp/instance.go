@@ -12,6 +12,10 @@ import (
 // ErrStopped is returned by Send and Emit once the Instance has been stopped.
 var ErrStopped = errors.New("fbp: instance stopped")
 
+// ErrEmitAfterProcess is returned by Emit once the ProcessFunc it was handed
+// to has returned, e.g. when a goroutine of the Brick keeps the Emitter.
+var ErrEmitAfterProcess = errors.New("fbp: emit after the ProcessFunc returned")
+
 // ErrInvalidJSON is returned by Send and Emit for Packet data that is not
 // valid JSON.
 var ErrInvalidJSON = errors.New("fbp: packet data is not valid JSON")
@@ -227,6 +231,14 @@ func (i *Instance) SendTo(ctx context.Context, inport string, p Packet) (string,
 	return p.RunID, nil
 }
 
+// RunGoingOn reports whether the Run runID is going on: a Packet of it is
+// buffered in an Inport, being processed by a Brick or being delivered by
+// Send. Without WithRunFinished the Instance does not track Runs and it
+// always reports false.
+func (i *Instance) RunGoingOn(runID string) bool {
+	return i.runs.goingOn(runID)
+}
+
 // SendAs marshals v to JSON and sends it like Send, with a new Run ID. An
 // error from json.Marshal is returned without sending anything.
 func (i *Instance) SendAs(ctx context.Context, v any) (string, error) {
@@ -301,12 +313,30 @@ func (n *brickNode) process(ctx context.Context, p Packet, cp int) {
 }
 
 func (n *brickNode) call(ctx context.Context, p Packet, cp int) (err error) {
+	g := &emitGate{}
+	// Runs last, after recover: from here on the Packet may stop counting.
+	defer g.close()
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic: %v", r)
 		}
 	}()
-	return n.brick.Process(ctx, p, emitter{node: n, stop: ctx, runID: p.RunID, parent: p.id, copy: cp})
+	return n.brick.Process(ctx, p, emitter{node: n, stop: ctx, runID: p.RunID, parent: p.id, copy: cp, gate: g})
+}
+
+// emitGate lets Emit through only while the ProcessFunc it belongs to runs.
+// Its Packet counts for the Run until then, so a Packet emitted later could
+// start the Run anew after it was reported finished. close waits for Emits
+// still under way.
+type emitGate struct {
+	mu     sync.RWMutex
+	closed bool
+}
+
+func (g *emitGate) close() {
+	g.mu.Lock()
+	g.closed = true
+	g.mu.Unlock()
 }
 
 type emitter struct {
@@ -315,9 +345,15 @@ type emitter struct {
 	runID  string
 	parent uint64 // Packet ID of the Packet being processed
 	copy   int
+	gate   *emitGate
 }
 
 func (e emitter) Emit(ctx context.Context, outport string, data json.RawMessage) error {
+	e.gate.mu.RLock()
+	defer e.gate.mu.RUnlock()
+	if e.gate.closed {
+		return fmt.Errorf("fbp: node %q, outport %q: %w", e.node.name, outport, ErrEmitAfterProcess)
+	}
 	out, ok := e.node.outports[outport]
 	if !ok {
 		return fmt.Errorf("fbp: node %q has no outport %q", e.node.name, outport)

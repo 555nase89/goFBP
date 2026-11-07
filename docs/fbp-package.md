@@ -28,7 +28,9 @@ Created per Instance by `Network.Start(ctx, opts...)`. Each `Option` changes the
 - `brickNode` is the runtime state of one Brick Node: it refers to its `Brick` definition, owns one
   `Inport` and the `Outport`s Success, Error and any additional ones.
 - `emitter` implements `Emitter` and is handed to the `ProcessFunc`; it sends through the Outports
-  of its `brickNode`.
+  of its `brickNode`. Its `emitGate` closes when the `ProcessFunc` returns (after waiting for Emits
+  still under way); later Emits return `ErrEmitAfterProcess`, so no Packet of a Run is emitted
+  after the processed Packet stopped counting for it.
 - `Inport`, `Outport` and `outputReceiver` all implement `receiver`. An `Outport` holds a list of
   `targets` and sends each Packet to every one of them (Fan-out). A target can be an `Inport`,
   an Outport of the enclosing Network or, for the top-level Network, an `outputReceiver` that calls
@@ -36,7 +38,7 @@ Created per Instance by `Network.Start(ctx, opts...)`. Each `Option` changes the
 - `runNode` is only used while `Network.build` wires the ports: it is the common view of a Brick
   Node or a nested Network (its Inports by name, which Outports Packets leave through). A Brick has
   only the Inport `In`.
-- `runs` exists only with `WithRunFinished`. It counts per Run ID the Packets that are buffered in an
+- `runs` exists only with `WithRunFinished`; `Instance.RunGoingOn` asks it whether a Run is going on. It counts per Run ID the Packets that are buffered in an
   `Inport` or being processed: `Inport.receive` adds one before the Packet enters the channel,
   `brickNode.run` removes it after `process`, and `Send` holds one while the Network Inport fans out.
   A Brick emits before its own Packet stops counting, so the count never drops to 0 while the Run

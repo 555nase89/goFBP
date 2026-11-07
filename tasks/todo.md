@@ -69,6 +69,20 @@
   splits the load, Success/Empty/Error outports, Run ID header, invalid JSON, `observe`/`trace` and
   shutdown on SIGTERM (instance disappears from `$SRV`) work.
 - Module path is now `github.com/555nase89/goFBP`, so the library can be fetched with `go get` (2026-11-06).
+
+- Review fixes (2026-11-07): `TestSetObserverWhileRunning` no longer flaky (waits for the end of
+  the Run, not only the Output, before switching the Observer); a Service rejects Run IDs longer
+  than 64 bytes (`service.MaxRunIDLength`); an invalid observe message is logged with its first
+  64 bytes only; `natscon.Config.TLS` (`cafile`, `certfile`, `keyfile`) for TLS / mutual TLS with
+  at least TLS 1.2; `docs/service.md` section "Security and NATS permissions".
+- Review fixes (2026-11-07): `Emit` after the `ProcessFunc` returned is refused with
+  `ErrEmitAfterProcess` (`emitGate`; before, a kept Emitter could restart a finished Run and
+  report it finished twice); an Error Packet on an unconnected Outport is logged without its data
+  (size and, for ErrorData, node/Brick/message only); `ProcessFunc` and `docs/concept.md` document
+  that `runtime.Goexit` is not caught.
+- Review fix (2026-11-07): a Service rejects invalid JSON under a new Run ID while the message's
+  Run is going on (`fbp.Instance.RunGoingOn`), so a sender who knows a Run ID can no longer add an
+  Error Packet and an early Done message to someone else's Run (`TestRejectKeepsRunGoingOn`).
 - Performance tests: `pkg/fbp/bench_test.go` (chain latency/throughput, buffer size, payload size,
   Fan-out, Concurrency I/O and CPU, Run tracking, Observer, nested Networks, Start) and
   `pkg/service/bench_test.go` (Call, CallAll, parallel Calls, publish throughput over an embedded
@@ -82,8 +96,6 @@
 - `BenchmarkCallParallel` hung once until its 1-minute ctx expired (one Call got no result) in the
   first full run on 2026-11-07; not reproduced in 27 further runs nor in 24 000 parallel Calls.
   Watch for a lost result under parallel Calls.
-- `TestSetObserverWhileRunning` (pkg/fbp) is flaky under `-race`: about 1 in 20 runs reports an
-  unexpected extra `Processed` Event right after switching the Observer (seen 2026-10-31).
 - `nats micro stats` always shows Processing Time 0s: the Service does not measure it. Decide whether
   to report it (e.g. time from receive to the last Output of a Run) or leave it out.
 - Run tracking (`fbp.WithRunFinished`, always on in a Service) uses one mutex per Instance: two

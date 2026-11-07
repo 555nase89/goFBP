@@ -23,6 +23,9 @@ const In = "In"
 // ErrInvalidJSON instead. The data is copied, so the Brick may reuse or
 // change it once Emit returns. Emit blocks while the target buffers are full,
 // until ctx is done or the Instance stops; then it returns ErrStopped.
+// An Emitter is valid only while the ProcessFunc it was handed to runs; it
+// may be used from goroutines the ProcessFunc waits for, but afterwards Emit
+// returns an error wrapping ErrEmitAfterProcess.
 type Emitter interface {
 	Emit(ctx context.Context, outport string, data json.RawMessage) error
 }
@@ -40,7 +43,10 @@ func EmitAs(ctx context.Context, out Emitter, outport string, v any) error {
 // ProcessFunc is the business logic of a Brick. It is called once per
 // incoming Packet. A returned error (or a panic) is sent to the Error Outport
 // as ErrorData. It holds no state of its own; configuration is captured when
-// the Brick is built.
+// the Brick is built. It must return normally or panic: runtime.Goexit (e.g.
+// via testing.T.FailNow) ends the goroutine of that Brick copy without an
+// Error Packet, the copy processes no further Packets, and the Run never
+// finishes.
 type ProcessFunc func(ctx context.Context, p Packet, out Emitter) error
 
 // Brick is a reusable unit of business logic with one Inport and at least the

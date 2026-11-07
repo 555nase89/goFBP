@@ -77,15 +77,16 @@ Connections are based on Go channels:
 - Packet data is copied when it enters the Network (Send) and when a Brick sends it (Emit). Every receiver owns the data it gets; nobody shares packet data.
 - When an Inport's buffer is full, the sending Outport waits until there is space again.
 - Inport channels are never closed. A Network is stopped by one shared stop signal (Go `context`); when it fires, all Bricks stop immediately. Packets still waiting in Inport buffers are not processed and are lost.
-- A Packet sent through an Error Outport that has no Connection is logged instead of being dropped silently.
+- A Packet sent through an Error Outport that has no Connection is logged instead of being dropped silently. The log record carries the size of the data and, for ErrorData, the node, Brick and message, but not the data itself.
+- A Brick emits only while its function runs; an Emit after the function has returned is refused.
 - An Observer is called synchronously from the goroutine that causes the Event and must return quickly. Only the Outports of the top-level Network create Output Events; the ports of nested Networks only forward and create none.
 - When a Brick's function returns an error or panics, the Brick sends a Packet with the same Run ID through its Error Outport. Its data is a JSON object: `node` (node path within the top-level Network, e.g. `outer/inner/upper`), `brick` (Brick name), `message` (error text) and `input` (data of the Packet that failed).
 
 Service:
 - Services are implemented with nats.io.
 - A Service receives Packets on one subject per Network Inport and publishes every Packet leaving a Network Outport on that Outport's subject, with the Packet's Run ID as the last token. There is no request/reply; consumers subscribe to `op.<outportname>.*` (all Runs) or `op.<outportname>.<runid>` (one Run).
-- The Run ID travels in the NATS header `Fbp-Run-Id` (case-sensitive), the Packet data in the message body. A Run ID that is not a valid subject token is not passed to the Network; an error Packet is published on the Error subject under a new Run ID instead.
-- Message data that is not valid JSON is not passed to the Network; an error Packet is published on the Error subject instead.
+- The Run ID travels in the NATS header `Fbp-Run-Id` (case-sensitive), the Packet data in the message body. A Run ID that is not a valid subject token or longer than 64 bytes is not passed to the Network; an error Packet is published on the Error subject under a new Run ID instead.
+- Message data that is not valid JSON is not passed to the Network; an error Packet is published on the Error subject instead, under the message's Run ID unless that Run is going on in the Service, then under a new one.
 - Observing is switched on and off via NATS for all Services of a Network at once (not only one of the queue group). While it is on, each Service publishes every Event of its Instance on the Trace subject, with an ID of the Service, because Packet IDs do not cross Services.
 - When a Run is finished, the Service announces it on the Done subject with the number of Packets the Run published on Outport subjects, so a client knows when it has all results.
 - Delivery is best effort, like inside a Network. When a Service cannot keep up, messages beyond its pending limit are dropped and not redelivered to another Service of the queue group; when the connection is down and the reconnect buffer is full, results are lost. Both cases are logged.

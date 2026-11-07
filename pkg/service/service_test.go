@@ -130,6 +130,27 @@ func TestService(t *testing.T) {
 		t.Fatalf("subject %q, run ID %q", got.Subject, id)
 	}
 
+	// A Run ID of MaxRunIDLength bytes is kept, a longer one is rejected.
+	longest := strings.Repeat("r", MaxRunIDLength)
+	for _, runID := range []string{longest, longest + "r"} {
+		msg = nats.NewMsg(InportSubject(s.Base()))
+		msg.Data = []byte(`"hello"`)
+		msg.Header.Set(RunIDHeader, runID)
+		if err := nc.PublishMsg(msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := nextMsg(t, success); got.Header.Get(RunIDHeader) != longest {
+		t.Fatalf("run ID %q, want %q", got.Header.Get(RunIDHeader), longest)
+	}
+	got = nextMsg(t, failure)
+	if err := json.Unmarshal(got.Data, &rejected); err != nil || !strings.Contains(rejected.Message, "at most 64 bytes") {
+		t.Fatalf("got %s, %v", got.Data, err)
+	}
+	if id := got.Header.Get(RunIDHeader); id == "" || strings.HasPrefix(id, longest) {
+		t.Fatalf("run ID %q", id)
+	}
+
 	// Without a Run ID a new one is created.
 	if err := nc.Publish(InportSubject(s.Base()), []byte(`"x"`)); err != nil {
 		t.Fatal(err)
@@ -402,5 +423,94 @@ func TestObserveSubject(t *testing.T) {
 	send("off-2")
 	if msg, err := events.NextMsg(100 * time.Millisecond); err == nil {
 		t.Fatalf("event after switching off: %s", msg.Data)
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	for _, tc := range []struct {
+		s    string
+		n    int
+		want string
+	}{
+		{"abc", 3, "abc"},
+		{"abcd", 3, "abc…"},
+		{"aäb", 2, "a…"}, // "ä" has 2 bytes and is not split
+		{"", 0, ""},
+	} {
+		if got := truncate(tc.s, tc.n); got != tc.want {
+			t.Errorf("truncate(%q, %d) = %q, want %q", tc.s, tc.n, got, tc.want)
+		}
+	}
+}
+
+// A rejected message carrying the Run ID of a Run that is going on gets a new
+// Run ID, so the Run gets neither an extra Error Packet nor an early Done.
+func TestRejectKeepsRunGoingOn(t *testing.T) {
+	nc := connect(t)
+	release := make(chan struct{})
+	block := &fbp.Brick{Name: "Block", Process: func(ctx context.Context, p fbp.Packet, out fbp.Emitter) error {
+		<-release
+		return out.Emit(ctx, fbp.Success, p.Data)
+	}}
+	n := &fbp.Network{Name: "block"}
+	for _, err := range []error{
+		n.Add("block", block),
+		n.ConnectIn("block"),
+		n.ConnectOut("block", fbp.Success, fbp.Success),
+	} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := Start(context.Background(), nc, "gofbp/test", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+	defer close(release)
+
+	victim, _ := nc.SubscribeSync(OutportSubject(s.Base(), "*", "victim"))
+	victimDone, _ := nc.SubscribeSync(DoneSubject(s.Base(), "victim"))
+	failure, _ := nc.SubscribeSync(OutportSubject(s.Base(), fbp.Error, "*"))
+	if err := nc.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	send := func(data string) {
+		t.Helper()
+		msg := nats.NewMsg(InportSubject(s.Base()))
+		msg.Data = []byte(data)
+		msg.Header.Set(RunIDHeader, "victim")
+		if err := nc.PublishMsg(msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	send(`"hello"`)
+	deadline := time.Now().Add(timeout)
+	for !s.inst.RunGoingOn("victim") {
+		if time.Now().After(deadline) {
+			t.Fatal("run not going on")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	send(`not json`)
+	got := nextMsg(t, failure)
+	if id := got.Header.Get(RunIDHeader); id == "" || id == "victim" {
+		t.Fatalf("rejected under run ID %q", id)
+	}
+	for _, sub := range []*nats.Subscription{victim, victimDone} {
+		if msg, err := sub.NextMsg(50 * time.Millisecond); err == nil {
+			t.Fatalf("unexpected message on %s: %s", msg.Subject, msg.Data)
+		}
+	}
+
+	// The Run itself ends as usual.
+	release <- struct{}{}
+	if got := nextMsg(t, victim); string(got.Data) != `"hello"` {
+		t.Fatalf("got %s", got.Data)
+	}
+	var done DoneData
+	if err := json.Unmarshal(nextMsg(t, victimDone).Data, &done); err != nil || done.Outputs != 1 {
+		t.Fatalf("done %+v, %v", done, err)
 	}
 }

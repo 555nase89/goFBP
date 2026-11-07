@@ -50,7 +50,7 @@ for the overall design, [service.md](service.md) for how a Service behaves and
 | `<base>.trace` | out | `publishEvent`, the `fbp.ObserverFunc` while observing is on |
 | `<base>.log.<serviceid>` | out | `logHandler`, the handler of `s.Logger()`, for records at or above `WithLogLevel` |
 | `<base>.loghistory.<serviceid>` | in, request/reply | `logSink.handleHistory`: the recent log records |
-| `<base>.done.<runid>` | out | `finish`, the `fbp.RunFinishedFunc` of the Instance; also after `reject` |
+| `<base>.done.<runid>` | out | `finish`, the `fbp.RunFinishedFunc` of the Instance; also after `reject` (never for a Run going on: `reject` then uses a new Run ID) |
 | `$SRV.PING\|INFO\|STATS[.<name>[.<id>]]` | in, request/reply | `discovery.handler` |
 
 `<base>` is `Subject(packagePath, network)`, e.g. `fbp.gofbp.examples.text.pipeline`. Package paths
@@ -79,6 +79,6 @@ Run ID; subscribe to `<base>.op.<outport>.*` (`OutportSubject(base, outport, "*"
 
 ## Path of a Packet
 
-NATS `<base>.ip.in` or `<base>.ip.<inport>` → `Service.handle` (Run ID from `Fbp-Run-Id` and subject token check, JSON
+NATS `<base>.ip.in` or `<base>.ip.<inport>` → `Service.handle` (Run ID from `Fbp-Run-Id`, subject token and length check, JSON
 check) → `Instance.SendTo` → Network → `Service.publish` → NATS `<base>.op.<outport>.<runid>` with the
 Run ID also in the header.

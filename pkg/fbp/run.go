@@ -32,6 +32,16 @@ func (r *runs) add(runID string) {
 	st.packets++
 }
 
+// goingOn reports whether a Packet of the Run counts right now.
+func (r *runs) goingOn(runID string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.inFlight[runID] != nil
+}
+
 // output counts a Packet leaving the Network. It is only called while a
 // Packet of the Run counts, so the Run is known.
 func (r *runs) output(runID string) {

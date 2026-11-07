@@ -30,6 +30,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/555nase89/goFBP/pkg/fbp"
 
@@ -39,9 +40,19 @@ import (
 // RunIDHeader is the NATS header carrying a Packet's Run ID. Like all NATS
 // headers it is case-sensitive: a header named e.g. "fbp-run-id" is not
 // recognised and the Packet gets a new Run ID. The Run ID becomes the last
-// token of the Outport subject, so it must be a valid subject token;
-// otherwise the Packet is rejected on the Error subject under a new Run ID.
+// token of the Outport subject, so it must be a valid subject token of at
+// most MaxRunIDLength bytes; otherwise the Packet is rejected on the Error
+// subject under a new Run ID. A message the Service rejects for another
+// reason gets a new Run ID too while its Run is going on, so it cannot add
+// an Error Packet to or announce the end of a Run it does not belong to.
 const RunIDHeader = "Fbp-Run-Id"
+
+// MaxRunIDLength is the longest Run ID, in bytes, a Service accepts from the
+// RunIDHeader. A UUID from fbp.NewRunID has 36.
+const MaxRunIDLength = 64
+
+// maxLoggedData is how many bytes of a rejected message's data are logged.
+const maxLoggedData = 64
 
 // Default pending limits of each Inport subscription. They are far below the
 // NATS client defaults (500,000 messages / 64 MB), so an overloaded Service
@@ -114,7 +125,7 @@ type Service struct {
 	inports []*inport // fbp.In first
 	obsSub  *nats.Subscription
 	logSub  *nats.Subscription // Log history requests
-	id      string // identifies this Service in published Events and on $SRV
+	id      string             // identifies this Service in published Events and on $SRV
 	stats   counters
 	disc    *discovery
 
@@ -329,7 +340,9 @@ func (s *Service) handleObserve(msg *nats.Msg) {
 	}
 	if err != nil {
 		s.stats.mu.Unlock()
-		s.logger.Warn("service: invalid observe message, expected true or false", "subject", msg.Subject, "data", string(msg.Data))
+		// Every Service of the Network logs this, so keep the record small.
+		s.logger.Warn("service: invalid observe message, expected true or false",
+			"subject", msg.Subject, "data", truncate(string(msg.Data), maxLoggedData), "size", len(msg.Data))
 		return
 	}
 	// Switched under the lock, so the reported state matches the Observer
@@ -363,6 +376,18 @@ func (s *Service) publishEvent(e fbp.Event) {
 	}
 }
 
+// truncate returns s cut to at most n bytes, marked with "…" when cut. It
+// does not split a UTF-8 character.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
+}
+
 // inport is the subscription of one Network Inport.
 type inport struct {
 	name    string // name of the Network Inport
@@ -394,12 +419,15 @@ func (s *Service) handle(ctx context.Context, in *inport, msg *nats.Msg) {
 	s.stats.inports[in.name].received++
 	s.stats.mu.Unlock()
 	runID := msg.Header.Get(RunIDHeader)
-	if runID != "" && !validToken(runID) {
-		s.reject(ctx, in.name, fmt.Sprintf("run ID %q is not a valid subject token", runID), fbp.NewRunID())
+	if runID != "" && (len(runID) > MaxRunIDLength || !validToken(runID)) {
+		reason := fmt.Sprintf("run ID %q is not a valid subject token of at most %d bytes", truncate(runID, MaxRunIDLength), MaxRunIDLength)
+		s.reject(ctx, in.name, reason, fbp.NewRunID())
 		return
 	}
 	if !json.Valid(msg.Data) {
-		if runID == "" {
+		// A Run going on is not touched: its Done message would come too
+		// early, and a caller counting its Packets would stop short.
+		if runID == "" || s.inst.RunGoingOn(runID) {
 			runID = fbp.NewRunID()
 		}
 		s.reject(ctx, in.name, "packet data is not valid JSON", runID)

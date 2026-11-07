@@ -210,13 +210,28 @@ func TestUnconnectedErrorIsLogged(t *testing.T) {
 
 	logs := make(chan slog.Record, 10)
 	inst := start(t, n, WithLogger(slog.New(recordHandler{logs})))
-	_, err := inst.Send(context.Background(), Packet{Data: json.RawMessage(`42`)})
+	input := `{"secret":"pw"}`
+	_, err := inst.Send(context.Background(), Packet{Data: json.RawMessage(input)})
 	must(t, err)
 
 	select {
 	case r := <-logs:
 		if r.Level != slog.LevelWarn || !strings.Contains(r.Message, "unconnected") {
 			t.Fatalf("unexpected log record %v %q", r.Level, r.Message)
+		}
+		// The error is logged, the Packet data is not.
+		attrs := map[string]string{}
+		r.Attrs(func(a slog.Attr) bool {
+			attrs[a.Key] = a.Value.String()
+			return true
+		})
+		if attrs["brick"] != "Upper" || attrs["error_node"] != "upper" || attrs["message"] == "" || attrs["size"] == "" {
+			t.Fatalf("attrs %v", attrs)
+		}
+		for k, v := range attrs {
+			if strings.Contains(v, "pw") {
+				t.Fatalf("attr %s contains Packet data: %q", k, v)
+			}
 		}
 	case <-time.After(timeout):
 		t.Fatal("error packet was not logged")
@@ -634,5 +649,81 @@ func TestSendAs(t *testing.T) {
 	}
 	if _, err := inst.SendAs(context.Background(), make(chan int)); err == nil {
 		t.Fatal("SendAs of a channel: want error, got nil")
+	}
+}
+
+func TestEmitAfterProcess(t *testing.T) {
+	late := make(chan Emitter, 1)
+	keep := &Brick{Name: "Keep", Process: func(ctx context.Context, p Packet, out Emitter) error {
+		late <- out
+		return out.Emit(ctx, Success, p.Data)
+	}}
+	n := &Network{Name: "late"}
+	must(t, n.Add("keep", keep))
+	must(t, n.ConnectIn("keep"))
+	must(t, n.ConnectOut("keep", Success, Success))
+
+	out, results := collector()
+	finished := make(chan int, 10)
+	inst := start(t, n, WithOutput(out), WithRunFinished(func(_ string, outputs int) { finished <- outputs }))
+	_, err := inst.Send(context.Background(), Packet{Data: null})
+	must(t, err)
+	next(t, results)
+	select {
+	case got := <-finished:
+		if got != 1 {
+			t.Fatalf("outputs %d, want 1", got)
+		}
+	case <-time.After(timeout):
+		t.Fatal("run not finished")
+	}
+
+	// The Emitter outlives its ProcessFunc: Emit is refused, the Run stays finished.
+	if err := (<-late).Emit(context.Background(), Success, null); !errors.Is(err, ErrEmitAfterProcess) {
+		t.Fatalf("got %v, want ErrEmitAfterProcess", err)
+	}
+	select {
+	case o := <-results:
+		t.Fatalf("unexpected output %s", o.p.Data)
+	case n := <-finished:
+		t.Fatalf("run finished again with %d outputs", n)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestRunGoingOn(t *testing.T) {
+	release := make(chan struct{})
+	block := &Brick{Name: "Block", Process: func(ctx context.Context, p Packet, out Emitter) error {
+		<-release
+		return out.Emit(ctx, Success, p.Data)
+	}}
+	n := &Network{Name: "going"}
+	must(t, n.Add("block", block))
+	must(t, n.ConnectIn("block"))
+	must(t, n.ConnectOut("block", Success, Success))
+
+	finished := make(chan string, 1)
+	inst := start(t, n, WithRunFinished(func(runID string, _ int) { finished <- runID }))
+	_, err := inst.Send(context.Background(), Packet{Data: null, RunID: "r"})
+	must(t, err)
+	if !inst.RunGoingOn("r") || inst.RunGoingOn("other") {
+		t.Fatalf("going on: r %v, other %v", inst.RunGoingOn("r"), inst.RunGoingOn("other"))
+	}
+	close(release)
+	select {
+	case <-finished:
+	case <-time.After(timeout):
+		t.Fatal("run not finished")
+	}
+	if inst.RunGoingOn("r") {
+		t.Fatal("finished run still going on")
+	}
+
+	// Without WithRunFinished no Run is tracked.
+	untracked := start(t, n)
+	_, err = untracked.Send(context.Background(), Packet{Data: null, RunID: "u"})
+	must(t, err)
+	if untracked.RunGoingOn("u") {
+		t.Fatal("untracked run reported as going on")
 	}
 }

@@ -30,10 +30,13 @@ defer s.Stop()
   of one Run only.
 - The Run ID travels in the header `Fbp-Run-Id`. NATS headers are case-sensitive, so the name must
   be written exactly like this; otherwise the Packet gets a new Run ID. Because the Run ID is a
-  subject token, a Run ID containing white space, `.`, `*` or `>` is rejected with an `ErrorData`
-  Packet on the Error subject under a new Run ID.
+  subject token, a Run ID containing white space, `.`, `*` or `>`, or one longer than 64 bytes
+  (`service.MaxRunIDLength`), is rejected with an `ErrorData` Packet on the Error subject under a
+  new Run ID.
 - Messages with invalid JSON are answered with an `ErrorData` Packet on the Error subject, with a
-  new Run ID if the message had none.
+  new Run ID if the message had none or if its Run is still going on in this Service
+  (`fbp.Instance.RunGoingOn`). Otherwise anyone who knows a Run ID could add an Error Packet and
+  an early Done message to someone else's Run.
 - `Start` rejects a Network whose Outport names are not valid subject tokens (empty, white space,
   `.`, `*`, `>`).
 - Publishes `service.DoneData` (`{"outputs":N}`) on `fbp.<packagepath>.<networkname>.done.<runid>`
@@ -42,7 +45,7 @@ defer s.Stop()
   `fbp.WithRunFinished` itself; one passed in `WithNetworkOptions` is replaced.
 - Subscribes to `fbp.<packagepath>.<networkname>.observe` without queue group, so a message
   there reaches every Service of the Network. Data `true` switches observing on, `false` switches it
-  off; anything else is logged and ignored. Observing is off after `Start` unless
+  off; anything else is logged (only its first 64 bytes, since every Service logs it) and ignored. Observing is off after `Start` unless
   `fbp.WithObserver` is passed in `WithNetworkOptions`.
 - While observing is on, every Event is published as `service.EventData` (JSON) on
   `fbp.<packagepath>.<networkname>.trace`, with the Run ID in the `Fbp-Run-Id` header.
@@ -167,6 +170,51 @@ nats sub 'fbp.gofbp.examples.text.pipeline.log.*'
 nats req fbp.gofbp.examples.text.pipeline.loghistory.<serviceid> ''
 ```
 
+## Security and NATS permissions
+
+A Service checks no identity: whoever may publish or subscribe to its subjects on the NATS server
+can use them. Access control therefore belongs into the NATS server (accounts and per-user
+`publish`/`subscribe` permissions). Keep in mind:
+
+- **Observe switches all Services.** A single `true` on `<base>.observe` makes every Service of the
+  Network publish every Event, including the full Packet data, on `<base>.trace`. That exposes all
+  data to whoever may subscribe to `<base>.trace` and adds one publish per Event. Allow publishing
+  on `<base>.observe` and subscribing to `<base>.trace` only to operators.
+- **Results are visible by Run ID.** Outport and Done subjects end with the Run ID. Whoever may
+  subscribe to `<base>.op.>` or `<base>.done.>` reads the results of all Runs, and a Run ID seen
+  there (or on `<base>.trace`) lets a sender add valid Packets to that Run. A rejected message
+  (invalid JSON) cannot touch a Run that is going on; it is answered under a new Run ID. NATS permissions work per subject token, not per Run ID prefix, so callers that must not
+  see each other's results need separate accounts (or Networks); within one account, all callers
+  that may subscribe to `<base>.op.>` trust each other.
+- **Logs contain error texts.** The Log subject and the Log history (`<base>.log.*`,
+  `<base>.loghistory.*`) carry log records with error messages, node names and whatever Bricks log
+  themselves. goFBP does not log Packet data (an Error Packet on an unconnected Outport is logged
+  with its size and error message only), but a Brick's error text may still contain parts of it.
+  Allow these subjects to operators only.
+- **Discovery is public.** Every Service answers `$SRV.PING`, `$SRV.INFO` and `$SRV.STATS` for
+  anyone, with package path, subjects and counters.
+
+A minimal permission set for a caller of one Network:
+
+```
+publish:   [ "fbp.gofbp.examples.text.pipeline.ip.>" ]
+subscribe: [ "fbp.gofbp.examples.text.pipeline.op.>", "fbp.gofbp.examples.text.pipeline.done.>" ]
+```
+
+and for the Service itself:
+
+```
+publish:   [ "fbp.gofbp.examples.text.pipeline.>" ]
+subscribe: [ "fbp.gofbp.examples.text.pipeline.>", "$SRV.>" ]
+allow_responses: true   # replies to $SRV and Log history requests
+```
+
+The connection is configured with `natscon.Config`: `nkeyfile` for authentication and `tls`
+(`cafile`, `certfile`, `keyfile`) for TLS. As soon as one TLS file is set, the connection must use
+TLS 1.2 or newer; `cafile` verifies the server instead of the system roots, `certfile` and
+`keyfile` (both or neither) are the client certificate for mutual TLS. With all of them empty, TLS
+is used only for a `tls://` URL or when the server requires it.
+
 ## Where Packets can be lost
 
 The output function of a Service publishes to NATS and never waits for the NATS handler, so the
@@ -188,7 +236,7 @@ per-message acknowledgement; this is not part of goFBP.
 
 ```sh
 cd examples/text/cmd/textservice
-cp example.json config.json        # adjust url / nkeyfile
+cp example.json config.json        # adjust url / nkeyfile / tls
 /snap/go/current/bin/go build -o textservice .
 ./textservice -config config.json
 

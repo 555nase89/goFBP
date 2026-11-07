@@ -10,7 +10,7 @@ through Go channels; a Service makes one running Network reachable via NATS. Ter
 |----------------------|----------|
 | `pkg/fbp`            | Core: `Packet`, `Brick`, `Network`, `Inport`/`Outport`, `Instance`. Standard library only |
 | `pkg/service`        | Wraps one Instance and connects it to NATS subjects |
-| `pkg/natscon`        | Reads the `natscon` config part and connects to NATS (optional NKey) |
+| `pkg/natscon`        | Reads the `natscon` config part and connects to NATS (optional NKey and TLS) |
 | `examples/text`      | Example Bricks and Networks, including a nested Network |
 | `examples/text/cmd/textservice` | Runs `text.Pipeline` as a Service |
 | `examples/text/cmd/textlocal`   | Runs `text.Pipeline` in-process: stdin lines in, results on stdout |
@@ -55,6 +55,14 @@ func Suffix(suffix string) *fbp.Brick {
 - `Emit` keeps the Run ID of the incoming Packet.
 - Additional Outports are listed in `Brick.Outports`; `Success` and `Error` always exist.
 - A returned error or a panic is sent through the Error Outport as `fbp.ErrorData`.
+- The `Emitter` is valid only while the function runs. It may be used from goroutines the function
+  waits for (e.g. with a `sync.WaitGroup`), but once the function has returned, `Emit` returns an
+  error wrapping `fbp.ErrEmitAfterProcess`. A Packet emitted later would count for a Run that was
+  already reported finished.
+- The function must return normally or panic. `runtime.Goexit` (e.g. via `testing.T.FailNow` or
+  `log.Fatal`-like helpers that end only the goroutine) is not caught: that copy of the Brick ends
+  without an Error Packet, processes no further Packets, and the Run never finishes. With
+  `Concurrency` 1 the Inport buffer then fills up and backpressure stops the Network in front of it.
 - The function may run in parallel (Concurrency, several Instances). Shared state must be guarded
   by the Brick.
 
