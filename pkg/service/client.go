@@ -34,7 +34,15 @@ func CallTo(ctx context.Context, nc *nats.Conn, base, inport string, data []byte
 		return "", fbp.Packet{}, fbp.ErrInvalidJSON
 	}
 	runID := fbp.NewRunID()
-	sub, err := nc.SubscribeSync(OutportSubject(base, "*", runID))
+	// Only the first result counts; later ones are dropped. SubscribeSync
+	// would allocate a channel of Options.SubChanLen (64k) entries per Call.
+	first := make(chan *nats.Msg, 1)
+	sub, err := nc.Subscribe(OutportSubject(base, "*", runID), func(msg *nats.Msg) {
+		select {
+		case first <- msg:
+		default:
+		}
+	})
 	if err != nil {
 		return "", fbp.Packet{}, err
 	}
@@ -51,9 +59,11 @@ func CallTo(ctx context.Context, nc *nats.Conn, base, inport string, data []byte
 		return "", fbp.Packet{}, err
 	}
 
-	res, err := sub.NextMsgWithContext(ctx)
-	if err != nil {
-		return "", fbp.Packet{}, err
+	var res *nats.Msg
+	select {
+	case <-ctx.Done():
+		return "", fbp.Packet{}, ctx.Err()
+	case res = <-first:
 	}
 	outport := strings.TrimSuffix(strings.TrimPrefix(res.Subject, base+".op."), "."+runID)
 	return outport, fbp.Packet{Data: res.Data, RunID: runID}, nil

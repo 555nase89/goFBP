@@ -43,11 +43,11 @@ AMD Ryzen 7 1700X (8 cores), Linux, Go 1.27.3, `-benchtime 0.3s`. Times are per 
 
 | Benchmark | Result | Notes |
 |-----------|--------|-------|
-| Call, sequential | 750 µs, 537 KB/op | see below |
+| Call, sequential | 470 µs, 8 KB/op | |
 | CallAll, sequential | 400 µs, 11 KB/op | waits for the Done message as well |
-| CallParallel (8 goroutines, one connection) | 340 µs | |
+| CallParallel (8 goroutines, one connection) | 160 µs | |
 | PublishThroughput (publish without waiting) | 13 µs per message | about 75 000 messages/s |
 
-`Call` is slower than `CallAll` although it does less. A likely cause: `nats.Conn.SubscribeSync`
-allocates a channel of `Options.SubChanLen` entries (default `nats.DefaultMaxChanLen`, 64k
-pointers = 512 KB) for every call. See the open item in `tasks/todo.md`.
+Until 2026-11-07 `Call` used `nats.Conn.SubscribeSync`, which allocates a channel of
+`Options.SubChanLen` entries (default `nats.DefaultMaxChanLen`, 64k pointers = 512 KB) for every
+call: 930 µs and 537 KB per sequential Call, 355 µs per parallel Call (`-count 5`).

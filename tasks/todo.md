@@ -74,11 +74,11 @@
   `pkg/service/bench_test.go` (Call, CallAll, parallel Calls, publish throughput over an embedded
   nats-server); baseline numbers in `docs/performance.md`. `connect` and `upperNetwork` in the
   service tests take `testing.TB` (2026-11-07).
+- `service.Call` subscribes asynchronously with a 1-entry channel instead of `SubscribeSync`, which
+  allocated a 64k-entry channel (512 KB) per call: sequential Call ~930 -> ~470 µs, parallel Calls
+  ~355 -> ~160 µs, 537 KB -> 8 KB per call (2026-11-07).
 
 ## Open
-- `service.Call` allocates about 512 KB per call (`SubscribeSync` makes a channel of
-  `nats.DefaultMaxChanLen` entries) and is slower than `CallAll` (~750 µs vs. ~400 µs, see
-  `docs/performance.md`). Consider an async `Subscribe` or `ChanSubscribe` with a small channel.
 - `BenchmarkCallParallel` hung once until its 1-minute ctx expired (one Call got no result) in the
   first full run on 2026-11-07; not reproduced in 27 further runs nor in 24 000 parallel Calls.
   Watch for a lost result under parallel Calls.
