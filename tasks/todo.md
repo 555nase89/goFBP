@@ -91,8 +91,14 @@
 - `service.Call` subscribes asynchronously with a 1-entry channel instead of `SubscribeSync`, which
   allocated a 64k-entry channel (512 KB) per call: sequential Call ~930 -> ~470 µs, parallel Calls
   ~355 -> ~160 µs, 537 KB -> 8 KB per call (2026-11-07).
+- `pkg/fbptest` (2026-11-07): `CallBrick` (Brick without Network, same rules as an Instance),
+  `Start`/`Instance.Run`/`RunTo` (waits for the end of the Run via `WithRunFinished`, no sleeps),
+  `Result.Want`/`WantError` (JSON comparison, order within an Outport ignored).
+  `examples/text` and `examples/crash` tests use it.
 
 ## Open
+- Further test ideas: Network coverage via the Observer (Nodes/Outports never reached), generic
+  fuzz invariants (every Run finishes, no Packet lost), replacing a Node by a stub, SVG drift check.
 - `BenchmarkCallParallel` hung once until its 1-minute ctx expired (one Call got no result) in the
   first full run on 2026-11-07; not reproduced in 27 further runs nor in 24 000 parallel Calls.
   Watch for a lost result under parallel Calls.

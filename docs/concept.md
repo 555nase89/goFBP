@@ -9,6 +9,7 @@ through Go channels; a Service makes one running Network reachable via NATS. Ter
 | Package / folder     | Contents |
 |----------------------|----------|
 | `pkg/fbp`            | Core: `Packet`, `Brick`, `Network`, `Inport`/`Outport`, `Instance`. Standard library only |
+| `pkg/fbptest`        | Test helpers: call a Brick without a Network, run a Packet through an Instance and compare its outputs. Standard library only |
 | `pkg/service`        | Wraps one Instance and connects it to NATS subjects |
 | `pkg/natscon`        | Reads the `natscon` config part and connects to NATS (optional NKey and TLS) |
 | `examples/text`      | Example Bricks and Networks, including a nested Network |
@@ -199,5 +200,23 @@ As a Service, see [service.md](service.md#running-the-example).
 ```sh
 /snap/go/current/bin/go test -race ./...
 ```
+
+Package `pkg/fbptest` keeps tests of Bricks and Networks short and free of sleeps:
+
+```go
+// A Brick alone: no Network, no goroutines. A returned error or panic becomes
+// ErrorData on the Error Outport, like in an Instance.
+fbptest.CallBrick(t, text.Trim(), `"  hi "`).Want(t, fbptest.Outputs{fbp.Success: {`"hi"`}})
+
+// A Network: Run waits until the Run is finished (WithRunFinished), so it sees
+// every Packet of the Run and fails on missing or additional ones.
+inst := fbptest.Start(t, n) // stopped when the test ends
+inst.Run(t, `"  hello "`).Want(t, fbptest.Outputs{fbp.Success: {`"HELLO!"`}})
+inst.Run(t, `42`).WantError(t, "trim", "not a JSON string")
+```
+
+`Want` compares the data as JSON (white space and key order do not matter) and ignores the order
+of Packets within an Outport, because Fan-out and Concurrency may change it. A Run that does not
+finish within `fbptest.Timeout` (5 s) fails the test and shows the Packets that left so far.
 
 `pkg/service` tests start an embedded NATS server, so no external server is needed.

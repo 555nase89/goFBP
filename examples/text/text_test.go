@@ -1,52 +1,34 @@
 package text
 
 import (
-	"context"
-	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/555nase89/goFBP/pkg/fbp"
+	"github.com/555nase89/goFBP/pkg/fbptest"
 )
+
+func TestTrim(t *testing.T) {
+	fbptest.CallBrick(t, Trim(), `"  hello "`).Want(t, fbptest.Outputs{fbp.Success: {`"hello"`}})
+	fbptest.CallBrick(t, Trim(), `"   "`).Want(t, fbptest.Outputs{Empty: {`""`}})
+	fbptest.CallBrick(t, Trim(), `42`).WantError(t, "", "not a JSON string")
+}
 
 func TestPipeline(t *testing.T) {
 	n, err := Pipeline()
 	if err != nil {
 		t.Fatal(err)
 	}
-	type output struct {
-		outport string
-		data    string
-	}
-	ch := make(chan output, 10)
-	inst, err := n.Start(context.Background(), fbp.WithOutput(func(_ context.Context, outport string, p fbp.Packet) {
-		ch <- output{outport, string(p.Data)}
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer inst.Stop()
+	inst := fbptest.Start(t, n)
 
 	tests := []struct {
-		in      string
-		outport string
-		data    string
+		in   string
+		want fbptest.Outputs
 	}{
-		{`"  hello "`, fbp.Success, `"HELLO!"`},
-		{`"   "`, Empty, `""`},
-		{`42`, fbp.Error, ""},
+		{`"  hello "`, fbptest.Outputs{fbp.Success: {`"HELLO!"`}}},
+		{`"   "`, fbptest.Outputs{Empty: {`""`}}},
 	}
 	for _, tt := range tests {
-		if _, err := inst.Send(context.Background(), fbp.Packet{Data: json.RawMessage(tt.in)}); err != nil {
-			t.Fatal(err)
-		}
-		select {
-		case o := <-ch:
-			if o.outport != tt.outport || (tt.data != "" && o.data != tt.data) {
-				t.Errorf("input %s: got %s %s", tt.in, o.outport, o.data)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("input %s: timeout", tt.in)
-		}
+		inst.Run(t, tt.in).Want(t, tt.want)
 	}
+	inst.Run(t, `42`).WantError(t, "trim", "not a JSON string")
 }
