@@ -61,6 +61,12 @@ type Brick struct {
 	// within one Instance. Values below 1 mean 1.
 	Concurrency int
 	Process     ProcessFunc
+	// Redact hides sensitive values wherever goFBP shows Packet data besides
+	// passing it on: in Events and in ErrorData.Input. It applies to the
+	// Packets this Brick receives and to the Packets it emits, and from there
+	// on to every Packet emitted from them within the Run. The Packets
+	// themselves are never changed. nil hides nothing. See RedactFields.
+	Redact RedactFunc
 }
 
 // Node is something that can be added to a Network: a *Brick or a nested

@@ -180,7 +180,8 @@ can use them. Access control therefore belongs into the NATS server (accounts an
 
 - **Observe switches all Services.** A single `true` on `<base>.observe` makes every Service of the
   Network publish every Event, including the full Packet data, on `<base>.trace`. That exposes all
-  data to whoever may subscribe to `<base>.trace` and adds one publish per Event. Allow publishing
+  data to whoever may subscribe to `<base>.trace` and adds one publish per Event. Fields hidden with
+  `Brick.Redact` appear as `"[redacted]"`; everything else, and the data of `Sent`, is shown as is. Allow publishing
   on `<base>.observe` and subscribing to `<base>.trace` only to operators.
 - **Results are visible by Run ID.** Outport and Done subjects end with the Run ID. Whoever may
   subscribe to `<base>.op.>` or `<base>.done.>` reads the results of all Runs, and a Run ID seen

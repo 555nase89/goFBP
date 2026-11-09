@@ -66,6 +66,12 @@ func Suffix(suffix string) *fbp.Brick {
   `Concurrency` 1 the Inport buffer then fills up and backpressure stops the Network in front of it.
 - The function may run in parallel (Concurrency, several Instances). Shared state must be guarded
   by the Brick.
+- A Brick that receives or adds secrets (keys, passwords) sets `Redact`, e.g.
+  `Redact: fbp.RedactFields("keyjson")`. Events and `ErrorData.Input` then show `"[redacted]"`
+  instead of the value, for this Brick's input and output and for every Packet emitted from its
+  output later in the Run. The Packets keep the real data. `RedactFields` looks at top-level fields
+  of a JSON object only; for anything else write a `RedactFunc`. It fails closed: a panic or invalid
+  JSON hides the whole data.
 
 ## Building a Network
 
@@ -157,6 +163,8 @@ inst, err := n.Start(ctx, fbp.WithObserver(func(e fbp.Event) { ... }))
 - The rules of `WithOutput` apply: the function is called synchronously, possibly concurrently, and
   must return quickly. Events of different Bricks may arrive out of order; sort by `Time`. `Data`
   is only valid during the call.
+- `Data` is redacted where a Brick set `Redact` (see Writing a Brick); `Sent` shows the data as
+  sent.
 - Without an Observer, no Events and no Packet IDs are created. Packet IDs do not travel over NATS;
   across Services, Events can only be joined by Run ID. A Service passes the option on with
   `service.WithNetworkOptions(fbp.WithObserver(...))`.

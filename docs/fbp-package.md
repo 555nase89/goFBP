@@ -16,7 +16,8 @@ several Nodes and in several Instances.
 - `Brick` and `Network` both implement `Node`. This is what allows a Network to contain nested
   Networks.
 - `Brick` holds its business logic as a `ProcessFunc`, which receives a `Packet` and an `Emitter`
-  for sending results.
+  for sending results, and optionally a `RedactFunc` (`Redact`, e.g. `RedactFields`) that hides
+  sensitive values in Events and `ErrorData.Input`.
 
 ## Runtime (green)
 
@@ -49,7 +50,9 @@ Created per Instance by `Network.Start(ctx, opts...)`. Each `Option` changes the
 
 ## Data (orange)
 
-- `Packet` is the unit of data travelling along a Connection (`Data`, `RunID`, internal Packet ID).
+- `Packet` is the unit of data travelling along a Connection (`Data`, `RunID`, internal Packet ID,
+  internal `redaction` chain: the `Redact` functions it inherited, applied only to Event data and
+  `ErrorData.Input`).
 - `ErrorData` is the payload of a Packet sent through the Error Outport when a `ProcessFunc` fails
   or panics.
 - `Event` describes one step of a Packet through an Instance; its `EventKind` is one of `Sent`,
