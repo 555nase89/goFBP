@@ -57,6 +57,10 @@ _Avoid_: Span, Log entry
 A function that receives every Event of an Instance. It can be given when the Instance starts and be set, replaced or removed while it runs. Without an Observer, no Events and no Packet IDs are created.
 _Avoid_: Tracer, Listener, Hook
 
+**Redaction**:
+Hiding sensitive values of Packet data wherever goFBP shows the data besides passing it on: in Events and in the `input` of ErrorData. A Brick declares it with a redact function; it applies to the Packets the Brick receives and emits and is inherited by every Packet emitted from them within the Run. The Packets themselves, and so the results of a Network, keep the real data.
+_Avoid_: Masking, Filter, Sanitizing
+
 **Packet ID**:
 Identifies one Packet within an Instance. Sending into the Network and every emit create a new Packet ID; an emitted Packet refers to the Packet it was made from as its parent. The copies of a Fan-out keep the same Packet ID. Packet IDs exist only while the Instance has an Observer and do not cross Services.
 
@@ -80,7 +84,8 @@ Connections are based on Go channels:
 - A Packet sent through an Error Outport that has no Connection is logged instead of being dropped silently. The log record carries the size of the data and, for ErrorData, the node, Brick and message, but not the data itself.
 - A Brick emits only while its function runs; an Emit after the function has returned is refused.
 - An Observer is called synchronously from the goroutine that causes the Event and must return quickly. Only the Outports of the top-level Network create Output Events; the ports of nested Networks only forward and create none.
-- When a Brick's function returns an error or panics, the Brick sends a Packet with the same Run ID through its Error Outport. Its data is a JSON object: `node` (node path within the top-level Network, e.g. `outer/inner/upper`), `brick` (Brick name), `message` (error text) and `input` (data of the Packet that failed).
+- When a Brick's function returns an error or panics, the Brick sends a Packet with the same Run ID through its Error Outport. Its data is a JSON object: `node` (node path within the top-level Network, e.g. `outer/inner/upper`), `brick` (Brick name), `message` (error text) and `input` (data of the Packet that failed, after Redaction; omitted if Redaction failed).
+- Redaction travels with the Packet: an emitted Packet inherits the redact functions of the Packet it was made from, plus the one of the emitting Brick, each Brick at most once. Error Packets do not inherit them, their `input` is already redacted. It fails closed: if a redact function panics or returns invalid JSON, the Event carries no data and ErrorData no `input`. Packets entering via Send carry no Redaction, so the `Sent` Event shows their data unchanged.
 
 Service:
 - Services are implemented with nats.io.

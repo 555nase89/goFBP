@@ -270,6 +270,11 @@ type brickNode struct {
 	obs      *observer
 }
 
+// redaction returns the redaction of p extended by the Brick's Redact.
+func (n *brickNode) redaction(p Packet) *redaction {
+	return p.redact.with(n.brick, n.brick.Redact)
+}
+
 // event reports e for this Node if the Instance is observed.
 func (n *brickNode) event(e Event) {
 	e.Node = n.name
@@ -281,7 +286,7 @@ func (n *brickNode) event(e Event) {
 func (n *brickNode) emit(ctx context.Context, out *Outport, p Packet, parent uint64, cp int) error {
 	if n.obs.enabled() {
 		p.id = n.obs.newID()
-		n.event(Event{Kind: Emitted, RunID: p.RunID, PacketID: p.id, ParentID: parent, Port: out.name, Copy: cp, Data: p.Data})
+		n.event(Event{Kind: Emitted, RunID: p.RunID, PacketID: p.id, ParentID: parent, Port: out.name, Copy: cp, Data: p.redact.apply(p.Data)})
 	}
 	return out.receive(ctx, p)
 }
@@ -295,7 +300,9 @@ func (n *brickNode) run(ctx context.Context, cp int) {
 			if ctx.Err() != nil {
 				return
 			}
-			n.event(Event{Kind: Received, RunID: p.RunID, PacketID: p.id, Port: "Inport", Copy: cp, Data: p.Data})
+			if n.obs.enabled() {
+				n.event(Event{Kind: Received, RunID: p.RunID, PacketID: p.id, Port: "Inport", Copy: cp, Data: n.redaction(p).apply(p.Data)})
+			}
 			n.process(ctx, p, cp)
 			n.in.runs.done(p.RunID)
 		}
@@ -308,7 +315,8 @@ func (n *brickNode) process(ctx context.Context, p Packet, cp int) {
 	if err == nil || ctx.Err() != nil {
 		return
 	}
-	data, _ := json.Marshal(ErrorData{Node: n.name, Brick: n.brick.Name, Message: err.Error(), Input: p.Data})
+	// The Error Packet does not inherit the redaction: its Input is redacted.
+	data, _ := json.Marshal(ErrorData{Node: n.name, Brick: n.brick.Name, Message: err.Error(), Input: n.redaction(p).apply(p.Data)})
 	_ = n.emit(ctx, n.outports[Error], Packet{Data: data, RunID: p.RunID}, p.id, cp)
 }
 
@@ -321,7 +329,7 @@ func (n *brickNode) call(ctx context.Context, p Packet, cp int) (err error) {
 			err = fmt.Errorf("panic: %v", r)
 		}
 	}()
-	return n.brick.Process(ctx, p, emitter{node: n, stop: ctx, runID: p.RunID, parent: p.id, copy: cp, gate: g})
+	return n.brick.Process(ctx, p, emitter{node: n, stop: ctx, runID: p.RunID, parent: p.id, redact: n.redaction(p), copy: cp, gate: g})
 }
 
 // emitGate lets Emit through only while the ProcessFunc it belongs to runs.
@@ -344,6 +352,7 @@ type emitter struct {
 	stop   context.Context // context of the Instance
 	runID  string
 	parent uint64 // Packet ID of the Packet being processed
+	redact *redaction // inherited by every emitted Packet
 	copy   int
 	gate   *emitGate
 }
@@ -366,7 +375,7 @@ func (e emitter) Emit(ctx context.Context, outport string, data json.RawMessage)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer context.AfterFunc(e.stop, cancel)()
-	err := e.node.emit(ctx, out, Packet{Data: data, RunID: e.runID}.clone(), e.parent, e.copy)
+	err := e.node.emit(ctx, out, Packet{Data: data, RunID: e.runID, redact: e.redact}.clone(), e.parent, e.copy)
 	if e.stop.Err() != nil {
 		return ErrStopped
 	}

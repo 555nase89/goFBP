@@ -105,8 +105,15 @@
   `BenchmarkCallParallel` uses a timeout per Call.
 - Claude skill `fbp-network-from-text`: Network constructor from an arrow notation in a `.fbp`
   file; all skills documented in `docs/claude-skills.md` (2026-11-07).
+- Redaction (2026-11-09): `Brick.Redact` (`RedactFunc`, helper `RedactFields`) hides sensitive
+  values in Events (and so on the Trace subject) and in `ErrorData.Input`. The chain travels with
+  the Packet (unexported `Packet.redact`), each Brick once, fails closed. Packets and results keep
+  the real data. Tests `pkg/fbp/redact_test.go`, `pkg/service/redact_test.go`. Prompted by automat-ai,
+  where a GCP service-account key in the payload reached `ErrorData` and the Trace.
 
 ## Open
+- Redaction of `Sent`: data entering via `Send` carries no Redaction. If secrets ever enter a
+  Network from outside, add a Network-level redact function (e.g. `Network.Redact`).
 - Further test ideas: Network coverage via the Observer (Nodes/Outports never reached), generic
   fuzz invariants (every Run finishes, no Packet lost), replacing a Node by a stub, SVG drift check.
 - `nats micro stats` always shows Processing Time 0s: the Service does not measure it. Decide whether

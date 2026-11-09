@@ -48,8 +48,8 @@ type Outport struct {
 // Send and Emit copy the data and Error packets are freshly marshalled. So
 // the last target gets p itself and only the others need a copy.
 func (out *Outport) receive(ctx context.Context, p Packet) error {
-	if out.obs != nil {
-		out.obs.event(Event{Kind: Output, RunID: p.RunID, PacketID: p.id, Port: out.name, Data: p.Data})
+	if out.obs != nil && out.obs.enabled() {
+		out.obs.event(Event{Kind: Output, RunID: p.RunID, PacketID: p.id, Port: out.name, Data: p.redact.apply(p.Data)})
 	}
 	if len(out.targets) == 0 {
 		if out.name == Error {

@@ -15,6 +15,9 @@ type Packet struct {
 	Data  json.RawMessage
 	RunID string
 	id    uint64 // Packet ID, set only while the Instance is observed
+	// redact hides sensitive values in Events and ErrorData.Input; it is
+	// inherited by every Packet emitted from this one (see Brick.Redact).
+	redact *redaction
 }
 
 // clone returns a copy whose Data does not share memory with p.
