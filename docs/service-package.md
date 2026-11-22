@@ -19,14 +19,22 @@ for the overall design, [service.md](service.md) for how a Service behaves and
   (`slog.Default()`, `DefaultPendingMsgs`, `DefaultPendingBytes`, `DefaultVersion`,
   `slog.LevelInfo`, `DefaultLogHistory`).
   `WithNetworkOptions` passes options on to `fbp.Network.Start`. `WithJetStream` sets
-  `config.js` to a `JetStreamConfig` (stream name, `AckWait`, `MaxDeliver`, `Prefetch`).
+  `config.js` to a `JetStreamConfig` (stream name, `AckWait`, `MaxDeliver`, `Prefetch`, `OnError`
+  (`ErrorPolicy`), `NakDelay`, `DeadLetter`, `Inports` (`InportSource` per Network Inport: stream and
+  filter subject) and `Envelope`).
 - `acks` exists only with `WithJetStream` (`jetstream.go`). It holds the JetStream messages not yet
   acknowledged (`msgs`) and, by Run ID, those already in the Network (`runs`). One pull goroutine
   per Inport (`pull` → `handleJetStream`) adds a message, passes it on through `receive` (shared
   with `handle`) and then records it with `sent`: still under the lock that `finish` takes, it asks
   `Instance.RunGoingOn`, so a Run cannot finish unnoticed in between; a Run that is already
-  finished gets its message acknowledged at once. `finish` acknowledges the messages of the Run
-  after the Done message. `progress` reports all `pending` messages in progress every
+  finished gets its message settled at once. `finish` settles the messages of the Run
+  after the Done message (`settleRun`). With JetStream the Instance's `OutputFunc` is `output`, which
+  notes the first Error Packet of each Run in `acks.errs` before `publish`; `settleRun` then
+  acknowledges, gives back (`NakWithDelay`) or calls `deadLetter` as `OnError` says. `deadLetter`
+  publishes asynchronously and terminates the message in a goroutine (`deadLetters`) once the
+  server confirms. `handleJetStream` sets the Run ID before `receive` when the message has none, and
+  `acks.entering` counts the messages between `add` and `sent`/`remove`, so the Error Packet of a
+  Run that finished before `sent` is kept for it. `progress` reports all `pending` messages in progress every
   `AckWait/3`; `release` (from `Stop` or the end of `ctx`) gives back all of them (`takeAll`, Nak).
   See [service.md](service.md#jetstream).
 - `counters` holds the statistics for `$SRV.STATS`, with `inportCounters` per Network Inport. It is owned by the Service and guarded by a
@@ -56,7 +64,9 @@ for the overall design, [service.md](service.md) for how a Service behaves and
 |---------|-----------|------------|
 | `<base>.ip.in` | in, queue group `<base>` | `handle` → `Instance.SendTo(fbp.In)` |
 | `<base>.ip.<inport>` | in, queue group `<base>`, one per extra Network Inport | `handle` → `Instance.SendTo(inport)` |
-| `<base>.ip.>` with `WithJetStream` | in, stored in the stream `StreamName(base)`, one consumer `ConsumerName(base, inport)` per Inport | `pull` → `handleJetStream` → `receive` → `Instance.SendTo`; acknowledged in `finish` |
+| `<base>.ip.>` with `WithJetStream` | in, stored in the stream `StreamName(base)`, one consumer `ConsumerName(base, inport)` per Inport | `pull` → `handleJetStream` → `receive` → `Instance.SendTo`; settled in `finish` |
+| `InportSource.FilterSubject` with `WithJetStream` | in, from the stream `InportSource.Stream` (only read), one consumer `ConsumerName(base, inport)` | like `<base>.ip.>` |
+| `JetStreamConfig.DeadLetter` | out, stored in a stream | `deadLetter`: messages of failed Runs (`OnError`) and rejected ones |
 | `<base>.op.<outport>.<runid>` | out | `publish`, the `fbp.OutputFunc` of the Instance |
 | `<base>.observe` | in, every Service | `handleObserve` → `Instance.SetObserver` |
 | `<base>.trace` | out | `publishEvent`, the `fbp.ObserverFunc` while observing is on |
@@ -84,6 +94,8 @@ Run ID; subscribe to `<base>.op.<outport>.*` (`OutportSubject(base, outport, "*"
 
 - `EventData` is the JSON form of an `fbp.Event`, published on the Trace subject. Packet IDs are
   counted per Instance, so they are only unique together with `Service`.
+- `Envelope` is the Packet data with `JetStreamConfig.Envelope`: subject, stream, stream sequence,
+  time, delivery count and headers of the message, plus its data.
 - `InportStats` is the `data` of each Inport endpoint in `$SRV.STATS`: messages dropped by the
   pending limits, messages JetStream delivered more than once (`Redelivered`); the endpoint `in` also carries the Packets published per Outport.
 - `LogData` is the JSON form of a log record on the Log subject; `Seq` counts per Service, so the

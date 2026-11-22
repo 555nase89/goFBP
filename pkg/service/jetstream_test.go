@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -346,5 +348,251 @@ func TestJetStreamRedeliversAfterCtxDone(t *testing.T) {
 	startJS(t, nc, upperNetwork(t), JetStreamConfig{})
 	if got := nextMsg(t, success); string(got.Data) != `"AGAIN"` {
 		t.Fatalf("got %s", got.Data)
+	}
+}
+
+// brickNetwork returns a Network "upper" with the single Brick b, its
+// Success and Error Outports connected to the Network's.
+func brickNetwork(t *testing.T, b *fbp.Brick) *fbp.Network {
+	t.Helper()
+	n := &fbp.Network{Name: "upper"}
+	for _, err := range []error{
+		n.Add("b", b), n.ConnectIn("b"),
+		n.ConnectOut("b", fbp.Success, fbp.Success), n.ConnectOut("b", fbp.Error, fbp.Error),
+	} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return n
+}
+
+// failingNetwork returns a Network whose Brick fails for the first fails
+// calls and then echoes its input; calls counts all calls.
+func failingNetwork(t *testing.T, fails int32, calls *atomic.Int32) *fbp.Network {
+	return brickNetwork(t, &fbp.Brick{Name: "Flaky", Process: func(ctx context.Context, p fbp.Packet, out fbp.Emitter) error {
+		if calls.Add(1) <= fails {
+			return errors.New("not yet")
+		}
+		return out.Emit(ctx, fbp.Success, p.Data)
+	}})
+}
+
+func createStream(t *testing.T, js jetstream.JetStream, name string, subjects ...string) jetstream.Stream {
+	t.Helper()
+	st, err := js.CreateStream(context.Background(), jetstream.StreamConfig{Name: name, Subjects: subjects})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+func streamMsgs(t *testing.T, st jetstream.Stream) uint64 {
+	t.Helper()
+	info, err := st.Info(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.State.Msgs
+}
+
+// By default a Run that ends with an Error Packet is acknowledged.
+func TestJetStreamErrorAck(t *testing.T) {
+	nc, js := connectJS(t)
+	var calls atomic.Int32
+	s := startJS(t, nc, failingNetwork(t, 1, &calls), JetStreamConfig{})
+	failure, _ := nc.SubscribeSync(OutportSubject(s.Base(), fbp.Error, "run-1"))
+	publishRun(t, nc, InportSubject(s.Base()), "run-1", []byte(`1`))
+	nextMsg(t, failure)
+	eventually(t, "acknowledgement", streamEmpty(t, js, StreamName(s.Base())))
+	time.Sleep(100 * time.Millisecond)
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("Brick called %d times, want 1", n)
+	}
+}
+
+// With ErrorNak a failed Run's message is delivered again until its Run
+// succeeds.
+func TestJetStreamErrorNakRetries(t *testing.T) {
+	nc, js := connectJS(t)
+	dlq := createStream(t, js, "DLQ", "dlq.>")
+	var calls atomic.Int32
+	s := startJS(t, nc, failingNetwork(t, 2, &calls), JetStreamConfig{OnError: ErrorNak, DeadLetter: "dlq.upper"})
+	success, _ := nc.SubscribeSync(OutportSubject(s.Base(), fbp.Success, "run-1"))
+	publishRun(t, nc, InportSubject(s.Base()), "run-1", []byte(`"x"`))
+	if got := nextMsg(t, success); string(got.Data) != `"x"` {
+		t.Fatalf("got %s", got.Data)
+	}
+	eventually(t, "acknowledgement", streamEmpty(t, js, StreamName(s.Base())))
+	if n := calls.Load(); n != 3 {
+		t.Fatalf("Brick called %d times, want 3", n)
+	}
+	if n := streamMsgs(t, dlq); n != 0 {
+		t.Fatalf("%d dead letters, want 0", n)
+	}
+}
+
+// With ErrorNak a message whose Run fails on its last delivery goes to the
+// Dead letter subject and is terminated.
+func TestJetStreamErrorNakDeadLetter(t *testing.T) {
+	nc, js := connectJS(t)
+	dlq := createStream(t, js, "DLQ", "dlq.>")
+	var calls atomic.Int32
+	s := startJS(t, nc, failingNetwork(t, 100, &calls), JetStreamConfig{
+		OnError: ErrorNak, MaxDeliver: 3, DeadLetter: "dlq.upper"})
+	publishRun(t, nc, InportSubject(s.Base()), "run-1", []byte(`{"a":1}`))
+	eventually(t, "dead letter", func() bool { return streamMsgs(t, dlq) == 1 })
+	eventually(t, "termination", streamEmpty(t, js, StreamName(s.Base())))
+	if n := calls.Load(); n != 3 {
+		t.Fatalf("Brick called %d times, want 3", n)
+	}
+	m, err := dlq.GetMsg(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ed fbp.ErrorData
+	if err := json.Unmarshal([]byte(m.Header.Get(ErrorHeader)), &ed); err != nil || ed.Message != "not yet" || ed.Input != nil {
+		t.Fatalf("error header %q: %+v, %v", m.Header.Get(ErrorHeader), ed, err)
+	}
+	if string(m.Data) != `{"a":1}` || m.Header.Get(RunIDHeader) != "run-1" ||
+		m.Header.Get(SubjectHeader) != InportSubject(s.Base()) || m.Header.Get(StreamHeader) != StreamName(s.Base()) ||
+		m.Header.Get(SequenceHeader) != "1" || m.Header.Get(DeliveredHeader) != "3" {
+		t.Fatalf("dead letter %s %v", m.Data, m.Header)
+	}
+}
+
+// With ErrorTerm a failed Run's message goes to the Dead letter subject at
+// once, also when it has no Run ID and its Run finishes right away.
+func TestJetStreamErrorTerm(t *testing.T) {
+	nc, js := connectJS(t)
+	dlq := createStream(t, js, "DLQ", "dlq.>")
+	var calls atomic.Int32
+	s := startJS(t, nc, failingNetwork(t, 100, &calls), JetStreamConfig{OnError: ErrorTerm, DeadLetter: "dlq.upper"})
+	const n = 20
+	for i := range n {
+		if err := nc.Publish(InportSubject(s.Base()), []byte(strconv.Itoa(i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	eventually(t, "dead letters", func() bool { return streamMsgs(t, dlq) == n })
+	eventually(t, "termination", streamEmpty(t, js, StreamName(s.Base())))
+	if got := calls.Load(); got != n {
+		t.Fatalf("Brick called %d times, want %d", got, n)
+	}
+	s.acks.mu.Lock()
+	defer s.acks.mu.Unlock()
+	if len(s.acks.msgs)+len(s.acks.runs)+len(s.acks.entering)+len(s.acks.errs) != 0 {
+		t.Fatalf("acks not empty: %+v", s.acks)
+	}
+}
+
+// With OnError other than ErrorAck, a rejected message goes to the Dead
+// letter subject too.
+func TestJetStreamRejectDeadLetter(t *testing.T) {
+	nc, js := connectJS(t)
+	dlq := createStream(t, js, "DLQ", "dlq.>")
+	s := startJS(t, nc, upperNetwork(t), JetStreamConfig{OnError: ErrorNak, DeadLetter: "dlq.upper"})
+	publishRun(t, nc, InportSubject(s.Base()), "run-1", []byte(`not json`))
+	eventually(t, "dead letter", func() bool { return streamMsgs(t, dlq) == 1 })
+	eventually(t, "termination", streamEmpty(t, js, StreamName(s.Base())))
+}
+
+// An Inport can read any stream through its own filter subject and get the
+// messages as Envelopes; the stream is only read.
+func TestJetStreamInportSourceEnvelope(t *testing.T) {
+	nc, js := connectJS(t)
+	events := createStream(t, js, "EVENTS", "events.>")
+	echo := &fbp.Brick{Name: "Echo", Process: func(ctx context.Context, p fbp.Packet, out fbp.Emitter) error {
+		return out.Emit(ctx, fbp.Success, p.Data)
+	}}
+	s := startJS(t, nc, brickNetwork(t, echo), JetStreamConfig{
+		Inports:  map[string]InportSource{fbp.In: {Stream: "EVENTS", FilterSubject: "events.order.>"}},
+		Envelope: true,
+	})
+	success, _ := nc.SubscribeSync(OutportSubject(s.Base(), fbp.Success, "*"))
+	if err := nc.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := js.Publish(ctx, "events.customer.7", []byte(`{"skip":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	msg := nats.NewMsg("events.order.42")
+	msg.Data = []byte(`{"type":"OrderPlaced"}`)
+	msg.Header.Set("Event-Type", "OrderPlaced")
+	if _, err := js.PublishMsg(ctx, msg); err != nil {
+		t.Fatal(err)
+	}
+
+	var e Envelope
+	if err := json.Unmarshal(nextMsg(t, success).Data, &e); err != nil {
+		t.Fatal(err)
+	}
+	if e.Subject != "events.order.42" || e.Stream != "EVENTS" || e.Sequence != 2 || e.Delivered != 1 ||
+		e.Time.IsZero() || string(e.Data) != `{"type":"OrderPlaced"}` || e.Header["Event-Type"][0] != "OrderPlaced" {
+		t.Fatalf("envelope %+v", e)
+	}
+	if m, err := success.NextMsg(100 * time.Millisecond); err == nil {
+		t.Fatalf("extra result %s", m.Data)
+	}
+	cons, err := js.Consumer(ctx, "EVENTS", ConsumerName(s.Base(), fbp.In))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "acknowledgement", func() bool {
+		info, err := cons.Info(ctx)
+		return err == nil && info.NumAckPending == 0 && info.NumPending == 0
+	})
+	if n := streamMsgs(t, events); n != 2 {
+		t.Fatalf("EVENTS holds %d messages, want 2", n)
+	}
+	if _, err := js.Stream(ctx, StreamName(s.Base())); !errors.Is(err, jetstream.ErrStreamNotFound) {
+		t.Fatalf("default stream created although no Inport reads it: %v", err)
+	}
+	info := s.disc.info()
+	if info.Endpoints[0].Subject != "events.order.>" || info.Endpoints[0].Metadata["stream"] != "EVENTS" {
+		t.Fatalf("endpoint %+v", info.Endpoints[0])
+	}
+}
+
+// Start refuses a JetStreamConfig it cannot carry out.
+func TestJetStreamConfigErrors(t *testing.T) {
+	nc, js := connectJS(t)
+	createStream(t, js, "EVENTS", "events.>")
+	if _, err := js.CreateConsumer(context.Background(), "EVENTS", jetstream.ConsumerConfig{
+		Durable: ConsumerName("fbp.gofbp.test.upper", fbp.In), FilterSubject: "events.a.>", AckPolicy: jetstream.AckExplicitPolicy,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]JetStreamConfig{
+		"missing stream":      {Inports: map[string]InportSource{fbp.In: {Stream: "NOPE"}}},
+		"unknown inport":      {Inports: map[string]InportSource{"other": {}}},
+		"other filter":        {Inports: map[string]InportSource{fbp.In: {Stream: "EVENTS", FilterSubject: "events.b.>"}}},
+		"dead letter unbound": {DeadLetter: "nowhere"},
+		"error policy":        {OnError: 7},
+	} {
+		s, err := Start(context.Background(), nc, "gofbp/test", upperNetwork(t), WithJetStream(c))
+		if err == nil {
+			s.Stop()
+			t.Errorf("%s: Start succeeded", name)
+			continue
+		}
+		t.Logf("%s: %v", name, err)
+	}
+}
+
+// A Service without JetStream keeps no state for failed Runs.
+func TestCoreErrorKeepsNoState(t *testing.T) {
+	nc := connect(t)
+	s, err := Start(context.Background(), nc, "gofbp/test", upperNetwork(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+	failure, _ := nc.SubscribeSync(OutportSubject(s.Base(), fbp.Error, "run-1"))
+	publishRun(t, nc, InportSubject(s.Base()), "run-1", []byte(`42`))
+	nextMsg(t, failure)
+	if s.acks != nil || s.jsc != nil {
+		t.Fatalf("JetStream state without WithJetStream")
 	}
 }

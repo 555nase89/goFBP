@@ -72,6 +72,11 @@ s, err := service.Start(ctx, nc, "gofbp/examples/text", net,
         AckWait:    30 * time.Second, // the default, service.DefaultAckWait
         MaxDeliver: 5,                // the default, service.DefaultMaxDeliver; -1 = no limit
         Prefetch:   10,               // the default, service.DefaultPrefetch
+        OnError:    service.ErrorAck, // the default; ErrorNak, ErrorTerm
+        NakDelay:   0,                // with ErrorNak
+        DeadLetter: "",               // subject for messages that failed for good
+        Inports:    nil,              // per Inport: other stream / filter subject
+        Envelope:   false,            // pass subject, sequence and headers along
     }),
 )
 ```
@@ -92,7 +97,39 @@ s, err := service.Start(ctx, nc, "gofbp/examples/text", net,
   acknowledgement after all Outputs and the Done message. Several messages with the same Run ID
   are acknowledged together when that Run is finished. A rejected message (invalid Run ID or JSON)
   is answered on the Error subject as usual and terminated, so it is not delivered again. A Run that
-  ends with an Error Packet is finished too and acknowledged.
+  ends with an Error Packet is finished too and, by default, acknowledged (see below).
+- **Failed Runs (`OnError`).** A Run failed when a Packet of it left the Network's Error Outport;
+  connect the Error Outports of the Bricks to it, an unconnected one is only logged. What becomes
+  of the messages of a failed Run:
+  - `ErrorAck` (default): acknowledged like any other; the Error Packet is the only trace.
+  - `ErrorNak`: given back, so JetStream delivers it again after `NakDelay`. Each attempt publishes
+    its Error Packet and Done message again. On the last delivery (`MaxDeliver` of the consumer) the
+    message goes to the Dead letter subject instead.
+  - `ErrorTerm`: goes to the Dead letter subject at once.
+
+  With `ErrorNak` or `ErrorTerm`, a rejected message (invalid Run ID or JSON) goes to the Dead
+  letter subject too instead of being only terminated.
+- **Dead letter.** With `DeadLetter` set, such a message is published there with its data and
+  headers plus `Fbp-Error` (the `fbp.ErrorData` without `input`, at most 1 KB), `Fbp-Subject`,
+  `Fbp-Stream`, `Fbp-Sequence` and `Fbp-Delivered`, and terminated once the server confirmed that it
+  stored it. If that fails, the message is given back (Nak) and logged. A stream must store the
+  Dead letter subject; `Start` checks that. Without `DeadLetter`, the message is logged and
+  terminated.
+- **Other streams (`Inports`).** `Inports` gives a Network Inport a stream and filter subject of its
+  own, e.g. `{Stream: "EVENTS", FilterSubject: "events.order.>"}`, so a Network reads an
+  application's event stream directly. Such a stream must exist; the Service never creates or
+  changes it, and only its own consumer is acknowledged, so with limits retention the messages stay
+  in the stream. Every Network gets its own consumer and thus all messages. A consumer that exists
+  must have the same filter subject, otherwise `Start` fails. `Call` and `CallAll` publish on the
+  Inport subject and do not reach such an Inport. The default stream is created only if an Inport
+  reads it.
+- **Envelope.** With `Envelope: true`, the Packet data is a `service.Envelope` instead of the
+  message data: `{"subject", "stream", "sequence", "time", "delivered", "header", "data"}`, with the
+  message data unchanged in `data`. A Brick reads it with `fbp.DataAs[service.Envelope]`. The
+  Dead letter subject gets the original message data, not the Envelope.
+- **Run ID.** A message without `Fbp-Run-Id` gets a new Run ID from the Service before it enters
+  the Network, so an Error Packet of a Run that finishes at once is still matched with its message.
+  A message delivered again gets a new one as well.
 - **Long Runs.** While a message is not acknowledged, the Service tells JetStream every
   `AckWait/3` that it is still in progress, so a Run may take longer than `AckWait`. Messages
   fetched ahead (`Prefetch` per Inport) wait in the NATS client and are not reported in progress:
