@@ -110,7 +110,8 @@ s, err := service.Start(ctx, nc, "gofbp/examples/text", net,
   With `ErrorNak` or `ErrorTerm`, a rejected message (invalid Run ID or JSON) goes to the Dead
   letter subject too instead of being only terminated.
 - **Dead letter.** With `DeadLetter` set, such a message is published there with its data and
-  headers plus `Fbp-Error` (the `fbp.ErrorData` without `input`, at most 1 KB), `Fbp-Subject`,
+  headers (except the server's control headers `Nats-*`, e.g. `Nats-Msg-Id` or `Nats-Batch-Id`,
+  which would act on the dead letter) plus `Fbp-Error` (the `fbp.ErrorData` without `input`, at most 1 KB), `Fbp-Subject`,
   `Fbp-Stream`, `Fbp-Sequence` and `Fbp-Delivered`, and terminated once the server confirmed that it
   stored it. If that fails, the message is given back (Nak) and logged. A stream must store the
   Dead letter subject; `Start` checks that. Without `DeadLetter`, the message is logged and

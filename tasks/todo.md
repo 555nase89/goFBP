@@ -131,6 +131,11 @@
   one consumer (`ConsumerConfig.FilterSubjects`); exclusive with `FilterSubject`; an existing
   consumer must have the same set in any order; `$SRV` lists them comma-separated. Removed the
   stale "Open" entry of the flaky `TestNestedNetworkInport`, fixed in #5.
+- Fix dead letters of messages with control headers (2026-11-22): `deadLetter` copied all headers
+  of the original, so a message stored by an atomic batch (`Nats-Batch-Id`) made the server reject
+  the dead letter (10174, atomic publish disabled) and the message was dropped after `MaxDeliver`;
+  a `Nats-Msg-Id` would drop a second dead letter of the same message as duplicate. Headers `Nats-*`
+  are no longer copied.
 
 ## Open
 - `docs/service-package.svg` does not show `ErrorPolicy`, `InportSource`, `Envelope` and the Dead

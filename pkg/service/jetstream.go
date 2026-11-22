@@ -458,7 +458,8 @@ func (s *Service) lastDelivery(m jetstream.Msg) bool {
 }
 
 // deadLetter puts m on the Dead letter subject and terminates it once the
-// server confirmed that it stored it. Without a Dead letter subject, or if
+// server confirmed that it stored it. The dead letter keeps m's headers
+// except the server's control headers (Nats-*). Without a Dead letter subject, or if
 // publishing fails, m is only logged: terminated in the first case, given
 // back in the second.
 func (s *Service) deadLetter(m jetstream.Msg, runID string, errData json.RawMessage) {
@@ -472,6 +473,14 @@ func (s *Service) deadLetter(m jetstream.Msg, runID string, errData json.RawMess
 	dl := nats.NewMsg(s.jsc.DeadLetter)
 	dl.Data = m.Data()
 	for k, v := range m.Headers() {
+		// Control headers of the server (Nats-Msg-Id, Nats-Batch-*,
+		// Nats-Expected-*, …) stored with the original would act on the
+		// dead letter: e.g. a batch ID makes the server treat it as part of
+		// an atomic batch, a message ID drops a second dead letter of the
+		// same message as duplicate.
+		if strings.HasPrefix(k, "Nats-") {
+			continue
+		}
 		dl.Header[k] = slices.Clone(v)
 	}
 	dl.Header.Set(ErrorHeader, errorHeader(errData))
