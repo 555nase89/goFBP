@@ -21,7 +21,7 @@ for the overall design, [service.md](service.md) for how a Service behaves and
   `WithNetworkOptions` passes options on to `fbp.Network.Start`. `WithJetStream` sets
   `config.js` to a `JetStreamConfig` (stream name, `AckWait`, `MaxDeliver`, `Prefetch`, `OnError`
   (`ErrorPolicy`), `NakDelay`, `DeadLetter`, `Inports` (`InportSource` per Network Inport: stream and
-  filter subject) and `Envelope`).
+  one (`FilterSubject`) or several (`FilterSubjects`) filter subjects) and `Envelope`).
 - `acks` exists only with `WithJetStream` (`jetstream.go`). It holds the JetStream messages not yet
   acknowledged (`msgs`) and, by Run ID, those already in the Network (`runs`). One pull goroutine
   per Inport (`pull` → `handleJetStream`) adds a message, passes it on through `receive` (shared
@@ -65,7 +65,7 @@ for the overall design, [service.md](service.md) for how a Service behaves and
 | `<base>.ip.in` | in, queue group `<base>` | `handle` → `Instance.SendTo(fbp.In)` |
 | `<base>.ip.<inport>` | in, queue group `<base>`, one per extra Network Inport | `handle` → `Instance.SendTo(inport)` |
 | `<base>.ip.>` with `WithJetStream` | in, stored in the stream `StreamName(base)`, one consumer `ConsumerName(base, inport)` per Inport | `pull` → `handleJetStream` → `receive` → `Instance.SendTo`; settled in `finish` |
-| `InportSource.FilterSubject` with `WithJetStream` | in, from the stream `InportSource.Stream` (only read), one consumer `ConsumerName(base, inport)` | like `<base>.ip.>` |
+| `InportSource.FilterSubject(s)` with `WithJetStream` | in, from the stream `InportSource.Stream` (only read), one consumer `ConsumerName(base, inport)` | like `<base>.ip.>` |
 | `JetStreamConfig.DeadLetter` | out, stored in a stream | `deadLetter`: messages of failed Runs (`OnError`) and rejected ones |
 | `<base>.op.<outport>.<runid>` | out | `publish`, the `fbp.OutputFunc` of the Instance |
 | `<base>.observe` | in, every Service | `handleObserve` → `Instance.SetObserver` |

@@ -568,6 +568,8 @@ func TestJetStreamConfigErrors(t *testing.T) {
 		"missing stream":      {Inports: map[string]InportSource{fbp.In: {Stream: "NOPE"}}},
 		"unknown inport":      {Inports: map[string]InportSource{"other": {}}},
 		"other filter":        {Inports: map[string]InportSource{fbp.In: {Stream: "EVENTS", FilterSubject: "events.b.>"}}},
+		"both filters":        {Inports: map[string]InportSource{fbp.In: {Stream: "EVENTS", FilterSubject: "events.a.>", FilterSubjects: []string{"events.b.>"}}}},
+		"empty filter":        {Inports: map[string]InportSource{fbp.In: {Stream: "EVENTS", FilterSubjects: []string{"events.a.>", ""}}}},
 		"dead letter unbound": {DeadLetter: "nowhere"},
 		"error policy":        {OnError: 7},
 	} {
@@ -595,4 +597,66 @@ func TestCoreErrorKeepsNoState(t *testing.T) {
 	if s.acks != nil || s.jsc != nil {
 		t.Fatalf("JetStream state without WithJetStream")
 	}
+}
+
+// An Inport can read several subjects of a stream through one consumer.
+func TestJetStreamFilterSubjects(t *testing.T) {
+	nc, js := connectJS(t)
+	createStream(t, js, "EVENTS", "events.>")
+	echo := &fbp.Brick{Name: "Echo", Process: func(ctx context.Context, p fbp.Packet, out fbp.Emitter) error {
+		return out.Emit(ctx, fbp.Success, p.Data)
+	}}
+	filters := []string{"events.order.>", "events.customer.>"}
+	s := startJS(t, nc, brickNetwork(t, echo), JetStreamConfig{
+		Inports:  map[string]InportSource{fbp.In: {Stream: "EVENTS", FilterSubjects: filters}},
+		Envelope: true,
+	})
+	success, _ := nc.SubscribeSync(OutportSubject(s.Base(), fbp.Success, "*"))
+	if err := nc.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, subj := range []string{"events.order.1", "events.invoice.2", "events.customer.3"} {
+		if _, err := js.Publish(ctx, subj, []byte(`{}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got []string
+	for range 2 {
+		var e Envelope
+		if err := json.Unmarshal(nextMsg(t, success).Data, &e); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, e.Subject)
+	}
+	if got[0] != "events.order.1" || got[1] != "events.customer.3" {
+		t.Fatalf("got %q", got)
+	}
+	if m, err := success.NextMsg(100 * time.Millisecond); err == nil {
+		t.Fatalf("extra result %s", m.Data)
+	}
+	cons, err := js.Consumer(ctx, "EVENTS", ConsumerName(s.Base(), fbp.In))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg := cons.CachedInfo().Config; cfg.FilterSubject != "" || len(cfg.FilterSubjects) != 2 {
+		t.Fatalf("consumer filters %q / %q", cfg.FilterSubject, cfg.FilterSubjects)
+	}
+	if subj := s.disc.info().Endpoints[0].Subject; subj != "events.order.>,events.customer.>" {
+		t.Fatalf("endpoint subject %q", subj)
+	}
+
+	// A second Service with the same subjects in another order shares the consumer.
+	startJS(t, nc, brickNetwork(t, echo), JetStreamConfig{
+		Inports: map[string]InportSource{fbp.In: {Stream: "EVENTS", FilterSubjects: []string{filters[1], filters[0]}}},
+	})
+	// One with other subjects is refused.
+	other, err := Start(ctx, nc, "gofbp/test", brickNetwork(t, echo), WithJetStream(JetStreamConfig{
+		Inports: map[string]InportSource{fbp.In: {Stream: "EVENTS", FilterSubjects: []string{"events.order.>"}}},
+	}))
+	if err == nil {
+		other.Stop()
+		t.Fatal("Start accepted other filter subjects for an existing consumer")
+	}
+	t.Log(err)
 }

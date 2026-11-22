@@ -119,8 +119,12 @@ s, err := service.Start(ctx, nc, "gofbp/examples/text", net,
   own, e.g. `{Stream: "EVENTS", FilterSubject: "events.order.>"}`, so a Network reads an
   application's event stream directly. Such a stream must exist; the Service never creates or
   changes it, and only its own consumer is acknowledged, so with limits retention the messages stay
-  in the stream. Every Network gets its own consumer and thus all messages. A consumer that exists
-  must have the same filter subject, otherwise `Start` fails. `Call` and `CallAll` publish on the
+  in the stream. Every Network gets its own consumer and thus all messages. `FilterSubjects`
+  instead of `FilterSubject` lets one Inport read several subjects through one consumer, e.g.
+  `{Stream: "EVENTS", FilterSubjects: []string{"events.order.>", "events.customer.>"}}`; they must
+  not overlap, and only one of the two fields may be set. The `$SRV` endpoint of such an Inport
+  lists them comma-separated as its subject. A consumer that exists must have the same filter
+  subjects (in any order), otherwise `Start` fails. `Call` and `CallAll` publish on the
   Inport subject and do not reach such an Inport. The default stream is created only if an Inport
   reads it.
 - **Envelope.** With `Envelope: true`, the Packet data is a `service.Envelope` instead of the

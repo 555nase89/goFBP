@@ -92,12 +92,12 @@ Service:
 - By default delivery is best effort, like inside a Network. When a Service cannot keep up, messages beyond its pending limit are dropped and not redelivered to another Service of the queue group; when the connection is down and the reconnect buffer is full, results are lost. Both cases are logged.
 - With JetStream, a Service takes the messages for its Inports from a JetStream stream instead of a queue group, through one durable consumer per Inport that all Services of the Network share, and acknowledges a message only once its Run is finished. A message whose Run does not finish in that Service (stop, crash, connection lost) is delivered again, possibly to another Service. Delivery is then at least once: a Run can be processed more than once, and its Packets and Done message published more than once. A rejected message (invalid Run ID or JSON) is not delivered again. All Services of a Network must use the same mode.
 - With JetStream, a Run that ended with a Packet on the Network's Error Outport is a failed Run. Its messages are acknowledged by default; they can instead be given back to be delivered again, or put on a Dead letter subject and terminated, which also happens on their last delivery.
-- With JetStream, a Network Inport can read another stream through a filter subject of its own (e.g. an application's event stream), and the Packet data can be an Envelope: the message data with its subject, stream sequence, time, delivery count and headers.
+- With JetStream, a Network Inport can read another stream through one or more filter subjects of its own (e.g. an application's event stream), and the Packet data can be an Envelope: the message data with its subject, stream sequence, time, delivery count and headers.
 
 **Service Subject structure**
 - fbp.<packagepath>.<networkname>.ip.in = NATS subject for the default Inport In of a Network
 - fbp.<packagepath>.<networkname>.ip.<inportname> = NATS subject for every additional Inport of a Network; its name must not be `in` or `observe`
-- With JetStream, the stream stores the Inport subjects `fbp.<packagepath>.<networkname>.ip.>`; the other subjects stay core NATS. An Inport with a stream and filter subject of its own reads those instead
+- With JetStream, the stream stores the Inport subjects `fbp.<packagepath>.<networkname>.ip.>`; the other subjects stay core NATS. An Inport with a stream and filter subjects of its own reads those instead
 - fbp.<packagepath>.<networkname>.op.<outportname>.<runid> = NATS subject for an Outport of a network; the last token is the Run ID of the Packet
 - fbp.<packagepath>.<networkname>.done.<runid> = NATS subject on which the Service announces that a Run is finished
 - fbp.<packagepath>.<networkname>.observe = NATS subject that switches the Observer of every Service of the Network on (`true`) or off (`false`)

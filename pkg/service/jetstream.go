@@ -9,6 +9,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -73,10 +74,47 @@ type InportSource struct {
 	// application, which a Service only reads.
 	Stream string
 	// FilterSubject selects the messages of the stream the Inport gets, e.g.
-	// "events.order.>". Empty means the Inport subject,
-	// InportSubjectFor(base, inport). A consumer that exists must have the
-	// same filter subject.
+	// "events.order.>". Empty, with FilterSubjects empty too, means the
+	// Inport subject, InportSubjectFor(base, inport).
 	FilterSubject string
+	// FilterSubjects selects the messages of several subjects through one
+	// consumer, e.g. "events.order.>" and "events.customer.>"; they must not
+	// overlap. Use either FilterSubject or FilterSubjects.
+	FilterSubjects []string
+}
+
+// filters returns the filter subjects of src, nil for the default.
+func (src InportSource) filters() ([]string, error) {
+	if src.FilterSubject != "" && len(src.FilterSubjects) > 0 {
+		return nil, errors.New("FilterSubject and FilterSubjects are both set")
+	}
+	filters := src.FilterSubjects
+	if src.FilterSubject != "" {
+		filters = []string{src.FilterSubject}
+	}
+	if slices.Contains(filters, "") {
+		return nil, errors.New("empty filter subject")
+	}
+	return filters, nil
+}
+
+// consumerFilters returns the filter subjects of the consumer config c.
+func consumerFilters(c jetstream.ConsumerConfig) []string {
+	have := slices.Clone(c.FilterSubjects)
+	if c.FilterSubject != "" {
+		have = append(have, c.FilterSubject)
+	}
+	return have
+}
+
+// sameFilters reports whether the consumer config c filters on exactly the
+// subjects filters, in any order.
+func sameFilters(c jetstream.ConsumerConfig, filters []string) bool {
+	have := consumerFilters(c)
+	want := slices.Clone(filters)
+	slices.Sort(have)
+	slices.Sort(want)
+	return slices.Equal(have, want)
 }
 
 // JetStreamConfig configures a Service that takes the messages for its
@@ -179,9 +217,12 @@ func (s *Service) startJetStream(ctx context.Context, c JetStreamConfig) error {
 	if c.OnError < ErrorAck || c.OnError > ErrorTerm {
 		return fmt.Errorf("service: unknown error policy %d", c.OnError)
 	}
-	for name := range c.Inports {
+	for name, src := range c.Inports {
 		if !slices.ContainsFunc(s.inports, func(in *inport) bool { return in.name == name }) {
 			return fmt.Errorf("service: JetStreamConfig.Inports names %q, which is not an Inport of the Network", name)
+		}
+		if _, err := src.filters(); err != nil {
+			return fmt.Errorf("service: inport %q: %w", name, err)
 		}
 	}
 	js, err := jetstream.New(s.nc)
@@ -205,8 +246,9 @@ func (s *Service) startJetStream(ctx context.Context, c JetStreamConfig) error {
 		if in.stream == "" {
 			in.stream = c.Stream
 		}
-		if src.FilterSubject != "" {
-			in.subject = src.FilterSubject
+		filters, _ := src.filters() // checked above
+		if len(filters) > 0 {
+			in.subject = strings.Join(filters, ",")
 		}
 		if in.stream == c.Stream {
 			if err := ensureStream(ctx, js, c.Stream, s.base); err != nil {
@@ -217,21 +259,25 @@ func (s *Service) startJetStream(ctx context.Context, c JetStreamConfig) error {
 			return fmt.Errorf("service: stream %q of inport %q: %w", in.stream, in.name, err)
 		}
 		in.consumer = ConsumerName(s.base, in.name)
-		cons, err := ensureConsumer(ctx, js, in.stream, jetstream.ConsumerConfig{
+		cfg := jetstream.ConsumerConfig{
 			Durable:       in.consumer,
 			Description:   "goFBP Inport " + in.name + " of " + s.base,
 			FilterSubject: in.subject,
 			AckPolicy:     jetstream.AckExplicitPolicy,
 			AckWait:       c.AckWait,
 			MaxDeliver:    c.MaxDeliver,
-		})
+		}
+		if len(filters) > 1 {
+			cfg.FilterSubject, cfg.FilterSubjects = "", filters
+		}
+		cons, err := ensureConsumer(ctx, js, in.stream, cfg)
 		if err != nil {
 			return err
 		}
 		info := cons.CachedInfo()
-		if src.FilterSubject != "" && info.Config.FilterSubject != src.FilterSubject {
-			return fmt.Errorf("service: consumer %q exists with filter subject %q, not %q",
-				in.consumer, info.Config.FilterSubject, src.FilterSubject)
+		if len(filters) > 0 && !sameFilters(info.Config, filters) {
+			return fmt.Errorf("service: consumer %q exists with filter subjects %q, not %q",
+				in.consumer, consumerFilters(info.Config), filters)
 		}
 		s.maxDeliver[in.consumer] = info.Config.MaxDeliver
 		// An existing consumer keeps its own AckWait.

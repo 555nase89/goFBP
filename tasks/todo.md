@@ -127,12 +127,14 @@
   ID before `receive`, `acks.entering` keeps the Error Packet of a Run that finished before `sent`.
   `$SRV` endpoints report the filter subject and stream. Services without JetStream unchanged
   (`publish` stays their `OutputFunc`).
+- `InportSource.FilterSubjects` (2026-11-22): one Inport reads several subjects of a stream through
+  one consumer (`ConsumerConfig.FilterSubjects`); exclusive with `FilterSubject`; an existing
+  consumer must have the same set in any order; `$SRV` lists them comma-separated. Removed the
+  stale "Open" entry of the flaky `TestNestedNetworkInport`, fixed in #5.
 
 ## Open
 - `docs/service-package.svg` does not show `ErrorPolicy`, `InportSource`, `Envelope` and the Dead
   letter subject yet.
-- `TestNestedNetworkInport` (`pkg/fbp`) is flaky: about 1 in 20 runs with `-race` an extra
-  `Processed` Event of `outer/two/exclaim` arrives after `events(t, evs, 8)` (seen on main too).
 - Further test ideas: Network coverage via the Observer (Nodes/Outports never reached), generic
   fuzz invariants (every Run finishes, no Packet lost), replacing a Node by a stub, SVG drift check.
 - `nats micro stats` always shows Processing Time 0s: the Service does not measure it. Decide whether
