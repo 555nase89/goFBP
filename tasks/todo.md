@@ -116,6 +116,9 @@
   or whose `Send` failed with `ErrStopped`, was reported finished; now it never finishes, as
   documented (`TestRunNotFinishedOnStop`, `TestRunNotFinishedOnStopDuringSend`). Before, a Service
   published a Done message for a Run cut off by `Stop`.
+- Fix flaky `TestNestedNetworkInport` (2026-11-22, #4): it switched the Observer on after the
+  Output of the first Run, while that Run's last Brick could still report `Processed`. It now waits
+  for the end of the Run (`WithRunFinished`) first.
 
 ## Open
 - Further test ideas: Network coverage via the Observer (Nodes/Outports never reached), generic
