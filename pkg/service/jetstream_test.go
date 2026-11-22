@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -659,4 +660,48 @@ func TestJetStreamFilterSubjects(t *testing.T) {
 		t.Fatal("Start accepted other filter subjects for an existing consumer")
 	}
 	t.Log(err)
+}
+
+// A message stored with control headers of the server (e.g. from an atomic
+// batch or with a message ID) still reaches the Dead letter subject, without
+// those headers, also when it fails again later.
+func TestJetStreamDeadLetterDropsControlHeaders(t *testing.T) {
+	nc, js := connectJS(t)
+	createStream(t, js, "EVENTS", "events.>")
+	if _, err := js.UpdateStream(context.Background(), jetstream.StreamConfig{
+		Name: "EVENTS", Subjects: []string{"events.>"}, AllowAtomicPublish: true}); err != nil {
+		t.Fatal(err)
+	}
+	dlq := createStream(t, js, "DLQ", "dlq.>")
+	var calls atomic.Int32
+	startJS(t, nc, failingNetwork(t, 100, &calls), JetStreamConfig{
+		Inports:    map[string]InportSource{fbp.In: {Stream: "EVENTS", FilterSubject: "events.>"}},
+		OnError:    ErrorTerm,
+		DeadLetter: "dlq.upper",
+	})
+	// An atomic batch of one message, with a message ID and a header of
+	// the application.
+	m := nats.NewMsg("events.a")
+	m.Data = []byte(`{}`)
+	m.Header.Set("Nats-Batch-Id", "b1")
+	m.Header.Set("Nats-Batch-Sequence", "1")
+	m.Header.Set("Nats-Batch-Commit", "1")
+	m.Header.Set("Nats-Msg-Id", "event-1")
+	m.Header.Set("App-Type", "Created")
+	if _, err := nc.RequestMsg(m, timeout); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "dead letter", func() bool { return streamMsgs(t, dlq) == 1 })
+	got, err := dlq.GetMsg(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k := range got.Header {
+		if strings.HasPrefix(k, "Nats-") {
+			t.Errorf("dead letter keeps control header %s", k)
+		}
+	}
+	if got.Header.Get("App-Type") != "Created" || got.Header.Get(SequenceHeader) != "1" {
+		t.Errorf("dead letter headers %v", got.Header)
+	}
 }
