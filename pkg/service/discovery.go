@@ -197,9 +197,10 @@ func (d *discovery) inportInfos() []micro.EndpointInfo {
 		md := map[string]string{"format": "json", "run_id_header": RunIDHeader, "inport": in.name}
 		if in.consumer != "" {
 			md["consumer"] = in.consumer
+			md["stream"] = in.stream
 		}
 		infos = append(infos, micro.EndpointInfo{
-			Name: endpointName(in.name), Subject: InportSubjectFor(d.s.base, in.name), QueueGroup: d.queueGroup(),
+			Name: endpointName(in.name), Subject: in.subject, QueueGroup: d.queueGroup(),
 			Metadata: md,
 		})
 	}
@@ -209,7 +210,7 @@ func (d *discovery) inportInfos() []micro.EndpointInfo {
 // queueGroup returns the queue group of the Inport endpoints: the base
 // subject, or none with WithJetStream, where a consumer shares the load.
 func (d *discovery) queueGroup() string {
-	if d.s.stream != "" {
+	if d.s.jsc != nil {
 		return ""
 	}
 	return d.s.base
@@ -243,7 +244,7 @@ func (d *discovery) stats() micro.Stats {
 		st.Redelivered = ic.redelivered
 		data, _ := json.Marshal(st)
 		endpoints = append(endpoints, &micro.EndpointStats{
-			Name: endpointName(in.name), Subject: InportSubjectFor(d.s.base, in.name), QueueGroup: d.queueGroup(),
+			Name: endpointName(in.name), Subject: in.subject, QueueGroup: d.queueGroup(),
 			NumRequests: ic.received, NumErrors: ic.errors, LastError: ic.lastError,
 			Data: data,
 		})
