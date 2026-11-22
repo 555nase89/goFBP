@@ -86,7 +86,7 @@ The Service listens on `fbp.github_com.acme.flows.shout.ip.in`. It publishes the
 - Done notification per Run, with the number of results, so a client knows when it has everything.
 - Logs published on NATS, with a log history that can be requested.
 
-Delivery is best effort. Read [Where Packets can be lost](docs/service.md#where-packets-can-be-lost) before you rely on it.
+Delivery is best effort, unless the Service takes its input from JetStream (`service.WithJetStream`, at least once). Read [Where Packets can be lost](docs/service.md#where-packets-can-be-lost) before you rely on it.
 
 ## Project layout
 

@@ -105,6 +105,17 @@
   `BenchmarkCallParallel` uses a timeout per Call.
 - Claude skill `fbp-network-from-text`: Network constructor from an arrow notation in a `.fbp`
   file; all skills documented in `docs/claude-skills.md` (2026-11-07).
+- JetStream for the Inports (2026-11-22): `service.WithJetStream(JetStreamConfig)` takes the
+  messages from a stream (created if missing: work queue, `<base>.ip.>`, `StreamName`) through one
+  shared durable pull consumer per Inport (`ConsumerName`) instead of the queue group. A message is
+  acknowledged after the Done message of its Run, rejected ones are terminated, Runs going on are
+  reported in progress every `AckWait/3`, and on `Stop` / end of `ctx` unacknowledged messages are
+  given back (Nak). `InportStats.Redelivered`, `$SRV` metadata `stream` / `consumer`. At least once:
+  a Run may be processed and published more than once. Tests with an embedded JetStream server.
+- Fix in `pkg/fbp` (2026-11-22): a Run whose Packet was being processed when the Instance stopped,
+  or whose `Send` failed with `ErrStopped`, was reported finished; now it never finishes, as
+  documented (`TestRunNotFinishedOnStop`, `TestRunNotFinishedOnStopDuringSend`). Before, a Service
+  published a Done message for a Run cut off by `Stop`.
 
 ## Open
 - Further test ideas: Network coverage via the Observer (Nodes/Outports never reached), generic

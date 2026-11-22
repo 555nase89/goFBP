@@ -37,7 +37,7 @@ A property of a Brick that sets how many copies of it process packets in paralle
 _Avoid_: Worker, Replica, Parallelism
 
 **Run**:
-Everything that results from a packet entering one of a Network's Inports, across all nodes and nesting levels. If a Packet enters Network without a run ID, it creates one. Packets that arrive carrying an existing run ID continue with that ID. A Run is finished when none of its Packets is buffered in an Inport or being processed by a Brick any more; by then every Packet of the Run that leaves the Network has left it.
+Everything that results from a packet entering one of a Network's Inports, across all nodes and nesting levels. If a Packet enters Network without a run ID, it creates one. Packets that arrive carrying an existing run ID continue with that ID. A Run is finished when none of its Packets is buffered in an Inport or being processed by a Brick any more; by then every Packet of the Run that leaves the Network has left it. A Run whose Packets are lost on stop never finishes.
 _Avoid_: Process, Flow, Trace, Job
 
 **Run ID**:
@@ -76,7 +76,7 @@ Connections are based on Go channels:
 - An Outport keeps a list of the Inports it is connected to. For Fan-out, it sends a copy of each packet to every connected Inport, one after another.
 - Packet data is copied when it enters the Network (Send) and when a Brick sends it (Emit). Every receiver owns the data it gets; nobody shares packet data.
 - When an Inport's buffer is full, the sending Outport waits until there is space again.
-- Inport channels are never closed. A Network is stopped by one shared stop signal (Go `context`); when it fires, all Bricks stop immediately. Packets still waiting in Inport buffers are not processed and are lost.
+- Inport channels are never closed. A Network is stopped by one shared stop signal (Go `context`); when it fires, all Bricks stop immediately. Packets still waiting in Inport buffers are not processed and are lost, like the Packets being processed when the signal fires; their Runs never finish.
 - A Packet sent through an Error Outport that has no Connection is logged instead of being dropped silently. The log record carries the size of the data and, for ErrorData, the node, Brick and message, but not the data itself.
 - A Brick emits only while its function runs; an Emit after the function has returned is refused.
 - An Observer is called synchronously from the goroutine that causes the Event and must return quickly. Only the Outports of the top-level Network create Output Events; the ports of nested Networks only forward and create none.
@@ -89,11 +89,13 @@ Service:
 - Message data that is not valid JSON is not passed to the Network; an error Packet is published on the Error subject instead, under the message's Run ID unless that Run is going on in the Service, then under a new one.
 - Observing is switched on and off via NATS for all Services of a Network at once (not only one of the queue group). While it is on, each Service publishes every Event of its Instance on the Trace subject, with an ID of the Service, because Packet IDs do not cross Services.
 - When a Run is finished, the Service announces it on the Done subject with the number of Packets the Run published on Outport subjects, so a client knows when it has all results.
-- Delivery is best effort, like inside a Network. When a Service cannot keep up, messages beyond its pending limit are dropped and not redelivered to another Service of the queue group; when the connection is down and the reconnect buffer is full, results are lost. Both cases are logged.
+- By default delivery is best effort, like inside a Network. When a Service cannot keep up, messages beyond its pending limit are dropped and not redelivered to another Service of the queue group; when the connection is down and the reconnect buffer is full, results are lost. Both cases are logged.
+- With JetStream, a Service takes the messages for its Inports from a JetStream stream instead of a queue group, through one durable consumer per Inport that all Services of the Network share, and acknowledges a message only once its Run is finished. A message whose Run does not finish in that Service (stop, crash, connection lost) is delivered again, possibly to another Service. Delivery is then at least once: a Run can be processed more than once, and its Packets and Done message published more than once. A rejected message (invalid Run ID or JSON) is not delivered again. All Services of a Network must use the same mode.
 
 **Service Subject structure**
 - fbp.<packagepath>.<networkname>.ip.in = NATS subject for the default Inport In of a Network
 - fbp.<packagepath>.<networkname>.ip.<inportname> = NATS subject for every additional Inport of a Network; its name must not be `in` or `observe`
+- With JetStream, the stream stores the Inport subjects `fbp.<packagepath>.<networkname>.ip.>`; the other subjects stay core NATS
 - fbp.<packagepath>.<networkname>.op.<outportname>.<runid> = NATS subject for an Outport of a network; the last token is the Run ID of the Packet
 - fbp.<packagepath>.<networkname>.done.<runid> = NATS subject on which the Service announces that a Run is finished
 - fbp.<packagepath>.<networkname>.observe = NATS subject that switches the Observer of every Service of the Network on (`true`) or off (`false`)

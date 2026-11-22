@@ -47,8 +47,12 @@ func ServiceName(base string) string {
 // InportStats is the Data of an Inport endpoint in $SRV.STATS.
 type InportStats struct {
 	// Dropped counts messages the NATS client dropped because the pending
-	// limits were exceeded.
+	// limits were exceeded. It stays 0 with WithJetStream.
 	Dropped int `json:"dropped"`
+	// Redelivered counts messages JetStream delivered to this Service more
+	// than once, e.g. because another Service stopped during their Run. It
+	// stays 0 without WithJetStream.
+	Redelivered int `json:"redelivered"`
 	// Outports counts the Packets published per Network Outport, for all
 	// Inports together. It is reported on the endpoint of fbp.In only.
 	Outports map[string]int `json:"outports,omitempty"`
@@ -74,9 +78,10 @@ type counters struct {
 }
 
 type inportCounters struct {
-	received  int
-	errors    int
-	lastError string
+	received    int
+	redelivered int
+	errors      int
+	lastError   string
 }
 
 func (c *counters) inError(inport, err string) {
@@ -122,6 +127,9 @@ func (s *Service) startDiscovery(net, packagePath string, inports, outports []st
 			"log":      LogSubject(s.base, s.id),
 		},
 		started: time.Now().UTC(),
+	}
+	if s.stream != "" {
+		d.metadata["stream"] = s.stream
 	}
 	s.disc = d
 	for _, verb := range []micro.Verb{micro.PingVerb, micro.InfoVerb, micro.StatsVerb} {
@@ -186,12 +194,25 @@ func (d *discovery) info() micro.Info {
 func (d *discovery) inportInfos() []micro.EndpointInfo {
 	var infos []micro.EndpointInfo
 	for _, in := range d.s.inports {
+		md := map[string]string{"format": "json", "run_id_header": RunIDHeader, "inport": in.name}
+		if in.consumer != "" {
+			md["consumer"] = in.consumer
+		}
 		infos = append(infos, micro.EndpointInfo{
-			Name: endpointName(in.name), Subject: InportSubjectFor(d.s.base, in.name), QueueGroup: d.s.base,
-			Metadata: map[string]string{"format": "json", "run_id_header": RunIDHeader, "inport": in.name},
+			Name: endpointName(in.name), Subject: InportSubjectFor(d.s.base, in.name), QueueGroup: d.queueGroup(),
+			Metadata: md,
 		})
 	}
 	return infos
+}
+
+// queueGroup returns the queue group of the Inport endpoints: the base
+// subject, or none with WithJetStream, where a consumer shares the load.
+func (d *discovery) queueGroup() string {
+	if d.s.stream != "" {
+		return ""
+	}
+	return d.s.base
 }
 
 // endpointName returns the $SRV endpoint name of a Network Inport.
@@ -215,11 +236,14 @@ func (d *discovery) stats() micro.Stats {
 				st.Outports[name] = n
 			}
 		}
-		st.Dropped, _ = in.sub.Dropped()
-		data, _ := json.Marshal(st)
+		if in.sub != nil {
+			st.Dropped, _ = in.sub.Dropped()
+		}
 		ic := c.inports[in.name]
+		st.Redelivered = ic.redelivered
+		data, _ := json.Marshal(st)
 		endpoints = append(endpoints, &micro.EndpointStats{
-			Name: endpointName(in.name), Subject: InportSubjectFor(d.s.base, in.name), QueueGroup: d.s.base,
+			Name: endpointName(in.name), Subject: InportSubjectFor(d.s.base, in.name), QueueGroup: d.queueGroup(),
 			NumRequests: ic.received, NumErrors: ic.errors, LastError: ic.lastError,
 			Data: data,
 		})
