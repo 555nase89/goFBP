@@ -119,8 +119,20 @@
 - Fix flaky `TestNestedNetworkInport` (2026-11-22, #4): it switched the Observer on after the
   Output of the first Run, while that Run's last Brick could still report `Processed`. It now waits
   for the end of the Run (`WithRunFinished`) first.
+- JetStream for event sourcing (2026-11-22): `JetStreamConfig.OnError` (`ErrorAck` default,
+  `ErrorNak` with `NakDelay`, `ErrorTerm`) and `DeadLetter` (original data and headers plus
+  `Fbp-Error`, `Fbp-Subject`, `Fbp-Stream`, `Fbp-Sequence`, `Fbp-Delivered`; terminated after the
+  PubAck); `Inports` with `InportSource` (own stream and filter subject, stream only read, default
+  stream created only if used, consumer filter checked); `Envelope`. The Service sets a missing Run
+  ID before `receive`, `acks.entering` keeps the Error Packet of a Run that finished before `sent`.
+  `$SRV` endpoints report the filter subject and stream. Services without JetStream unchanged
+  (`publish` stays their `OutputFunc`).
 
 ## Open
+- `docs/service-package.svg` does not show `ErrorPolicy`, `InportSource`, `Envelope` and the Dead
+  letter subject yet.
+- `TestNestedNetworkInport` (`pkg/fbp`) is flaky: about 1 in 20 runs with `-race` an extra
+  `Processed` Event of `outer/two/exclaim` arrives after `events(t, evs, 8)` (seen on main too).
 - Further test ideas: Network coverage via the Observer (Nodes/Outports never reached), generic
   fuzz invariants (every Run finishes, no Packet lost), replacing a Node by a stub, SVG drift check.
 - `nats micro stats` always shows Processing Time 0s: the Service does not measure it. Decide whether

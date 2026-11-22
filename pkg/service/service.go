@@ -140,10 +140,14 @@ type Service struct {
 	unsubErr     error
 
 	// Only with WithJetStream, see jetstream.go.
-	stream       string         // name of the stream
-	acks         *acks          // messages not yet acknowledged
-	pulls        sync.WaitGroup // one pull goroutine per Network Inport
-	progressStop chan struct{}  // stops the progress goroutine
+	js           jetstream.JetStream
+	jsc          *JetStreamConfig // with the defaults applied
+	stream       string           // name of the default stream, if an Inport reads it
+	acks         *acks            // messages not yet acknowledged
+	maxDeliver   map[string]int   // MaxDeliver by consumer name
+	deadLetters  sync.WaitGroup   // messages on their way to the Dead letter subject
+	pulls        sync.WaitGroup   // one pull goroutine per Network Inport
+	progressStop chan struct{}    // stops the progress goroutine
 	releaseOnce  sync.Once
 }
 
@@ -266,12 +270,16 @@ func Start(ctx context.Context, nc *nats.Conn, packagePath string, net *fbp.Netw
 	s.stats.inports = map[string]*inportCounters{}
 	for _, name := range append([]string{fbp.In}, net.Inports...) {
 		if s.stats.inports[name] == nil {
-			s.inports = append(s.inports, &inport{name: name})
+			s.inports = append(s.inports, &inport{name: name, subject: InportSubjectFor(base, name)})
 			s.stats.inports[name] = &inportCounters{}
 		}
 	}
 
-	netOpts := append(cfg.netOpts, fbp.WithLogger(s.logger), fbp.WithOutput(s.publish), fbp.WithRunFinished(s.finish))
+	output := s.publish
+	if cfg.js != nil {
+		output = s.output
+	}
+	netOpts := append(cfg.netOpts, fbp.WithLogger(s.logger), fbp.WithOutput(output), fbp.WithRunFinished(s.finish))
 	if s.inst, err = net.Start(ctx, netOpts...); err != nil {
 		return nil, err
 	}
@@ -423,6 +431,8 @@ type inport struct {
 	name     string                    // name of the Network Inport
 	sub      *nats.Subscription        // core NATS; nil with WithJetStream
 	msgs     jetstream.MessagesContext // WithJetStream only
+	subject  string                    // subject of the Inport, or with WithJetStream the filter subject of its consumer
+	stream   string                    // name of the stream of its consumer, WithJetStream only
 	consumer string                    // name of the JetStream consumer, WithJetStream only
 	dropped  int                       // last value of sub.Dropped() that was logged; used by handle only
 }
@@ -543,9 +553,8 @@ func (s *Service) finish(runID string, outputs int) {
 	if err := s.nc.PublishMsg(msg); err != nil {
 		s.logger.Error("service: publish failed, run end lost", "subject", msg.Subject, "run_id", runID, "error", err)
 	}
-	for _, m := range s.acks.finished(runID) {
-		s.settle(m, "ack", m.Ack)
-	}
+	ms, errData := s.acks.finished(runID)
+	s.settleRun(runID, ms, errData)
 }
 
 // Stop unsubscribes, also from $SRV, stops the Instance and flushes published Packets.
