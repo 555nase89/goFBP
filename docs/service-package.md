@@ -11,13 +11,24 @@ for the overall design, [service.md](service.md) for how a Service behaves and
 
 - `Service` wraps exactly one `fbp.Instance` and connects it to NATS. `Start(ctx, nc, pkg, net,
   opts...)` computes the base subject, starts the Instance with `fbp.WithOutput(s.publish)`,
-  subscribes to one subject per Network Inport and to the Observe subject, starts the
+  subscribes to one subject per Network Inport (or, with `WithJetStream`, binds each to its
+  JetStream consumer) and to the Observe subject, starts the
   discovery and flushes, so the server knows all subscriptions when `Start` returns. `id` is a random ID per
   Service; it is reported on `$SRV` and as `EventData.Service` (`s.ID()`).
 - `Option` is a `func(*config)`; `Start` applies all of them to a `config` with the defaults
   (`slog.Default()`, `DefaultPendingMsgs`, `DefaultPendingBytes`, `DefaultVersion`,
   `slog.LevelInfo`, `DefaultLogHistory`).
-  `WithNetworkOptions` passes options on to `fbp.Network.Start`.
+  `WithNetworkOptions` passes options on to `fbp.Network.Start`. `WithJetStream` sets
+  `config.js` to a `JetStreamConfig` (stream name, `AckWait`, `MaxDeliver`, `Prefetch`).
+- `acks` exists only with `WithJetStream` (`jetstream.go`). It holds the JetStream messages not yet
+  acknowledged (`msgs`) and, by Run ID, those already in the Network (`runs`). One pull goroutine
+  per Inport (`pull` → `handleJetStream`) adds a message, passes it on through `receive` (shared
+  with `handle`) and then records it with `sent`: still under the lock that `finish` takes, it asks
+  `Instance.RunGoingOn`, so a Run cannot finish unnoticed in between; a Run that is already
+  finished gets its message acknowledged at once. `finish` acknowledges the messages of the Run
+  after the Done message. `progress` reports all `pending` messages in progress every
+  `AckWait/3`; `release` (from `Stop` or the end of `ctx`) gives back all of them (`takeAll`, Nak).
+  See [service.md](service.md#jetstream).
 - `counters` holds the statistics for `$SRV.STATS`, with `inportCounters` per Network Inport. It is owned by the Service and guarded by a
   mutex, because `handle`, `handleObserve`, `publish` and the STATS responder run in different
   goroutines.
@@ -45,6 +56,7 @@ for the overall design, [service.md](service.md) for how a Service behaves and
 |---------|-----------|------------|
 | `<base>.ip.in` | in, queue group `<base>` | `handle` → `Instance.SendTo(fbp.In)` |
 | `<base>.ip.<inport>` | in, queue group `<base>`, one per extra Network Inport | `handle` → `Instance.SendTo(inport)` |
+| `<base>.ip.>` with `WithJetStream` | in, stored in the stream `StreamName(base)`, one consumer `ConsumerName(base, inport)` per Inport | `pull` → `handleJetStream` → `receive` → `Instance.SendTo`; acknowledged in `finish` |
 | `<base>.op.<outport>.<runid>` | out | `publish`, the `fbp.OutputFunc` of the Instance |
 | `<base>.observe` | in, every Service | `handleObserve` → `Instance.SetObserver` |
 | `<base>.trace` | out | `publishEvent`, the `fbp.ObserverFunc` while observing is on |
@@ -63,6 +75,8 @@ Run ID; subscribe to `<base>.op.<outport>.*` (`OutportSubject(base, outport, "*"
   part of the subjects and of the `$SRV` metadata. `net.Start` creates the `fbp.Instance`.
 - `nats.Conn` is passed in by the caller and is not closed by `Stop`. `nats.Subscription`s are held
   per Network Inport (`inports[i].sub`, each with the pending limits), for Observe (`obsSub`) and in `discovery.subs`.
+  With `WithJetStream`, each Inport holds a `jetstream.MessagesContext` (`inports[i].msgs`) of its
+  consumer instead of `sub`; `acks` holds `jetstream.Msg`s.
 - `micro.Ping`, `micro.Info` and `micro.Stats` from `nats.go/micro` are only used as reply types,
   so the replies match what `nats micro ls/info/stats` expects.
 
@@ -71,7 +85,7 @@ Run ID; subscribe to `<base>.op.<outport>.*` (`OutportSubject(base, outport, "*"
 - `EventData` is the JSON form of an `fbp.Event`, published on the Trace subject. Packet IDs are
   counted per Instance, so they are only unique together with `Service`.
 - `InportStats` is the `data` of each Inport endpoint in `$SRV.STATS`: messages dropped by the
-  pending limits; the endpoint `in` also carries the Packets published per Outport.
+  pending limits, messages JetStream delivered more than once (`Redelivered`); the endpoint `in` also carries the Packets published per Outport.
 - `LogData` is the JSON form of a log record on the Log subject; `Seq` counts per Service, so the
   Log history and the Log subject can be joined without duplicates.
 - `ObserveStats` is the `data` of the `observe` endpoint in `$SRV.STATS`: whether observing is on,
@@ -79,6 +93,7 @@ Run ID; subscribe to `<base>.op.<outport>.*` (`OutportSubject(base, outport, "*"
 
 ## Path of a Packet
 
-NATS `<base>.ip.in` or `<base>.ip.<inport>` → `Service.handle` (Run ID from `Fbp-Run-Id`, subject token and length check, JSON
+NATS `<base>.ip.in` or `<base>.ip.<inport>` → `Service.handle` (with JetStream:
+`Service.handleJetStream`) → `Service.receive` (Run ID from `Fbp-Run-Id`, subject token and length check, JSON
 check) → `Instance.SendTo` → Network → `Service.publish` → NATS `<base>.op.<outport>.<runid>` with the
 Run ID also in the header.

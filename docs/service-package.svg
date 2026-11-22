@@ -30,11 +30,11 @@
 <text x="50" y="172" class="st">func(*config)</text>
 <text x="50" y="192" class="fd">WithLogger(l)</text>
 <text x="50" y="210" class="fd">WithPendingLimits(msgs, bytes)</text>
-<text x="50" y="228" class="fd">WithVersion(v)</text>
+<text x="50" y="228" class="fd">WithVersion(v), WithJetStream(c)</text>
 <text x="50" y="246" class="fd">WithNetworkOptions(opts...)</text>
 <text x="50" y="264" class="fd">WithLogLevel(l), WithLogHistory(n)</text>
 </g>
-<g><rect x="40" y="300" width="260" height="110" rx="6" fill="#e7f5ea" stroke="#2e7d32" stroke-width="1.6"/>
+<g><rect x="40" y="300" width="260" height="128" rx="6" fill="#e7f5ea" stroke="#2e7d32" stroke-width="1.6"/>
 <rect x="40" y="300" width="260" height="28" rx="6" fill="#2e7d32" opacity="0.14"/>
 <text x="170.0" y="319" class="nm" text-anchor="middle">config</text>
 <line x1="40" y1="328" x2="300" y2="328" stroke="#2e7d32" stroke-width="1"/>
@@ -42,6 +42,7 @@
 <text x="50" y="364" class="fd">pendingMsgs, pendingBytes int</text>
 <text x="50" y="382" class="fd">version string</text>
 <text x="50" y="400" class="fd">netOpts []fbp.Option</text>
+<text x="50" y="418" class="fd">js *JetStreamConfig</text>
 </g>
 <path d="M170,274 L170,300" fill="none" stroke="#555" stroke-width="1.4" stroke-dasharray="6 4" marker-end="url(#arrow)"/>
 <text x="176" y="286" class="lb" text-anchor="start">sets</text>
@@ -107,13 +108,13 @@
 <text x="710" y="194" class="fd">base, id string</text>
 <text x="710" y="212" class="fd">logger *slog.Logger (logHandler)</text>
 <text x="710" y="230" class="fd">inst *fbp.Instance</text>
-<text x="710" y="248" class="fd">inports []*inport (sub, dropped)</text>
+<text x="710" y="248" class="fd">inports []*inport (sub | msgs)</text>
 <text x="710" y="266" class="fd">obsSub, logSub *nats.Subscription</text>
 <text x="710" y="284" class="fd">stats counters</text>
-<text x="710" y="302" class="fd">disc *discovery</text>
+<text x="710" y="302" class="fd">disc *discovery, acks *acks</text>
 <line x1="700" y1="307" x2="1020" y2="307" stroke="#2e7d32" stroke-width="1" stroke-dasharray="3 3"/>
 <text x="710" y="327" class="fd">Start(ctx, nc, pkg, net, opts...)</text>
-<text x="710" y="345" class="fd">handle / handleObserve</text>
+<text x="710" y="345" class="fd">handle / handleJetStream / handleObserve</text>
 <text x="710" y="363" class="fd">publish / publishEvent / finish</text>
 <text x="710" y="381" class="fd">SetObserver(fn) / Logger() / Base() / ID()</text>
 <text x="710" y="399" class="fd">Stop()</text>
@@ -128,7 +129,7 @@
 <text x="640" y="112" class="lb" text-anchor="start">Start applies opts</text>
 <g><rect x="1100" y="130" width="580" height="56" rx="6" fill="#efe8fb" stroke="#6a4fb3" stroke-width="1.6"/>
 <text x="1110" y="152" class="fd" font-weight="bold">&lt;base&gt;.ip.in | &lt;base&gt;.ip.&lt;inport&gt;</text>
-<text x="1110" y="174" class="lb">queue group &lt;base&gt;: each Packet reaches one Service of the Network</text></g>
+<text x="1110" y="174" class="lb">queue group &lt;base&gt;, or a JetStream consumer per Inport (WithJetStream): one Service per Packet</text></g>
 <g><rect x="1100" y="200" width="580" height="56" rx="6" fill="#efe8fb" stroke="#6a4fb3" stroke-width="1.6"/>
 <text x="1110" y="222" class="fd" font-weight="bold">&lt;base&gt;.op.&lt;outport&gt;.&lt;runid&gt;</text>
 <text x="1110" y="244" class="lb">per Network Outport (Success, Error, …) and Run ID; subscribe with .*</text></g>
@@ -258,6 +259,31 @@
 <text x="200" y="946" class="lb" text-anchor="start">publishEvent creates</text>
 <path d="M1240,1064 L1240,1220 L190,1220 L190,1190" fill="none" stroke="#555" stroke-width="1.4" stroke-dasharray="6 4" marker-end="url(#arrow)"/>
 <text x="700" y="1214" class="lb" text-anchor="start">converted to</text>
+<g><rect x="340" y="600" width="200" height="126" rx="6" fill="#e7f5ea" stroke="#2e7d32" stroke-width="1.6"/>
+<rect x="340" y="600" width="200" height="28" rx="6" fill="#2e7d32" opacity="0.14"/>
+<text x="440.0" y="619" class="nm" text-anchor="middle">acks</text>
+<line x1="340" y1="628" x2="540" y2="628" stroke="#2e7d32" stroke-width="1"/>
+<text x="350" y="642" class="st">WithJetStream only: not yet acked</text>
+<text x="350" y="662" class="fd">msgs set of Msg</text>
+<text x="350" y="680" class="fd">runs map[runID][]Msg</text>
+<line x1="340" y1="686" x2="540" y2="686" stroke="#2e7d32" stroke-width="1" stroke-dasharray="3 3"/>
+<text x="350" y="704" class="fd">add / sent / finished</text>
+<text x="350" y="720" class="fd">pending / takeAll</text>
+</g>
+<path d="M720,412 L720,660 L540,660" fill="none" stroke="#555" stroke-width="1.4" marker-end="url(#arrow)" marker-start="url(#comp)"/>
+<text x="650" y="652" class="lb" text-anchor="start">acks</text>
+<g><rect x="340" y="760" width="200" height="126" rx="6" fill="#e7f5ea" stroke="#2e7d32" stroke-width="1.6"/>
+<rect x="340" y="760" width="200" height="28" rx="6" fill="#2e7d32" opacity="0.14"/>
+<text x="440.0" y="779" class="nm" text-anchor="middle">JetStreamConfig</text>
+<line x1="340" y1="788" x2="540" y2="788" stroke="#2e7d32" stroke-width="1"/>
+<text x="350" y="802" class="st">stream, consumer per Inport</text>
+<text x="350" y="822" class="fd">Stream string</text>
+<text x="350" y="840" class="fd">AckWait time.Duration</text>
+<text x="350" y="858" class="fd">MaxDeliver int</text>
+<text x="350" y="876" class="fd">Prefetch int</text>
+</g>
+<path d="M300,419 L320,419 L320,820 L340,820" fill="none" stroke="#555" stroke-width="1.4" marker-end="url(#arrow)"/>
+<text x="306" y="812" class="lb" text-anchor="start">js</text>
 <text x="40" y="1275" class="lb">Legend:</text>
 <path d="M110,1271 L160,1271" fill="none" stroke="#555" stroke-width="1.4" marker-end="url(#arrow)"/>
 <text x="170" y="1275" class="lb">field / reference / subscribes · publishes</text>

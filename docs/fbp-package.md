@@ -43,7 +43,9 @@ Created per Instance by `Network.Start(ctx, opts...)`. Each `Option` changes the
   `brickNode.run` removes it after `process`, and `Send` holds one while the Network Inport fans out.
   A Brick emits before its own Packet stops counting, so the count never drops to 0 while the Run
   goes on. At 0 it calls the `RunFinishedFunc` with the number of Outputs it counted in
-  `outputReceiver`. Packets lost on `Stop` leave their Run unfinished.
+  `outputReceiver`. Packets lost on `Stop` leave their Run unfinished: neither `brickNode.run`
+  (when the Instance stopped during `process`) nor `Send` (when it failed with `ErrStopped`)
+  removes its Packet then.
 - `observer` reports `Event`s to the `ObserverFunc`. It is referenced by the `Instance`, every
   `brickNode` and the Outports of the top-level Network.
 

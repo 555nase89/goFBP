@@ -63,8 +63,8 @@ func WithOutput(fn OutputFunc) Option {
 type RunFinishedFunc func(runID string, outputs int)
 
 // WithRunFinished sets the function called when a Run is finished. Without it
-// the Instance does not track Runs. A Run whose Packets are lost on Stop
-// never finishes. Packets sent with the Run ID of a Run that is still going
+// the Instance does not track Runs. A Run whose Packets are lost on Stop,
+// buffered or being processed, never finishes. Packets sent with the Run ID of a Run that is still going
 // on count for that Run, so it finishes only once.
 func WithRunFinished(fn RunFinishedFunc) Option {
 	return func(c *config) { c.finished = fn }
@@ -219,12 +219,13 @@ func (i *Instance) SendTo(ctx context.Context, inport string, p Packet) (string,
 	// Inport is done, so a first target finishing early cannot end the Run.
 	i.runs.add(p.RunID)
 	err := entry.receive(ctx, p)
-	i.runs.done(p.RunID)
 	// A Packet that got into a buffer while the Instance was stopping is
-	// lost, so report it as not delivered.
+	// lost, so report it as not delivered. Its Run is lost too and must not
+	// be reported finished.
 	if i.ctx.Err() != nil {
 		return "", ErrStopped
 	}
+	i.runs.done(p.RunID)
 	if err != nil {
 		return "", err
 	}
@@ -297,6 +298,11 @@ func (n *brickNode) run(ctx context.Context, cp int) {
 			}
 			n.event(Event{Kind: Received, RunID: p.RunID, PacketID: p.id, Port: "Inport", Copy: cp, Data: p.Data})
 			n.process(ctx, p, cp)
+			if ctx.Err() != nil {
+				// Stopped while processing: the Packet and its Run are
+				// lost, so the Run must not be reported finished.
+				return
+			}
 			n.in.runs.done(p.RunID)
 		}
 	}
