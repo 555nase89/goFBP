@@ -1,6 +1,7 @@
 // Command fbpcli sends one input to an Inport (-inport, default In) of a
 // Network that runs as a Service and prints every Packet of the Run as
-// "<Outport> <data>", one per line. It exits with status 1 when a Packet left
+// "<Outport> <data>", one per line, or with -json as one JSON object
+// {"<Outport>": [<data>, ...], ...} once the Run has ended. It exits with status 1 when a Packet left
 // through the Error Outport.
 package main
 
@@ -32,8 +33,9 @@ func main() {
 	asString := flag.Bool("string", false, "send the input as a JSON string")
 	timeout := flag.Duration("timeout", 10*time.Second, "how long to wait for the end of the Run")
 	first := flag.Bool("first", false, "stop after the first Packet of the Run")
+	asJSON := flag.Bool("json", false, `print the Packets after the Run as one JSON object {"<Outport>":[<data>,...]}`)
 	flag.Parse()
-	outports, err := run(*path, *network, *inport, *input, *asString, *first, *timeout)
+	outports, err := run(*path, *network, *inport, *input, *asString, *first, *asJSON, *timeout)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "fbpcli:", err)
 		os.Exit(1)
@@ -43,7 +45,7 @@ func main() {
 	}
 }
 
-func run(path, network, inport, input string, asString, first bool, timeout time.Duration) ([]string, error) {
+func run(path, network, inport, input string, asString, first, asJSON bool, timeout time.Duration) ([]string, error) {
 	if network == "" {
 		return nil, errors.New("-network is required")
 	}
@@ -69,5 +71,8 @@ func run(path, network, inport, input string, asString, first bool, timeout time
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if asJSON {
+		return cli.RunJSON(ctx, nc, base, inport, data, os.Stdout, first)
+	}
 	return cli.Run(ctx, nc, base, inport, data, os.Stdout, first)
 }
