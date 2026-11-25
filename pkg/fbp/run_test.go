@@ -151,3 +151,63 @@ func TestRunFinishedWithoutOutput(t *testing.T) {
 		t.Fatalf("got %+v, want run %s with 0 outputs", f, runID)
 	}
 }
+
+// A Run whose Packet is being processed when the Instance stops is lost and
+// never reported finished, also when the Brick returns afterwards.
+func TestRunNotFinishedOnStop(t *testing.T) {
+	started := make(chan struct{})
+	n := &Network{Name: "wait"}
+	must(t, n.Add("wait", &Brick{Name: "Wait", Process: func(ctx context.Context, p Packet, out Emitter) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	}}))
+	must(t, n.ConnectIn("wait"))
+	l := newRunLog()
+	inst, err := n.Start(context.Background(), WithRunFinished(l.runFinished))
+	must(t, err)
+	_, err = inst.Send(context.Background(), Packet{Data: str("a")})
+	must(t, err)
+	<-started
+	inst.Stop()
+	select {
+	case f := <-l.finished:
+		t.Fatalf("Run reported finished after Stop: %+v", f)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// A Send that fails because the Instance stops does not finish the Run.
+func TestRunNotFinishedOnStopDuringSend(t *testing.T) {
+	started := make(chan struct{})
+	n := &Network{Name: "wait"}
+	must(t, n.Add("wait", &Brick{Name: "Wait", Process: func(ctx context.Context, p Packet, out Emitter) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	}}))
+	must(t, n.ConnectIn("wait"))
+	l := newRunLog()
+	inst, err := n.Start(context.Background(), WithBufferSize(0), WithRunFinished(l.runFinished))
+	must(t, err)
+	_, err = inst.Send(context.Background(), Packet{Data: str("a"), RunID: "first"})
+	must(t, err)
+	<-started
+	// The Brick is busy and the buffer has no room: this Send blocks until
+	// Stop and fails.
+	sent := make(chan error, 1)
+	go func() {
+		_, err := inst.Send(context.Background(), Packet{Data: str("b"), RunID: "second"})
+		sent <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	inst.Stop()
+	if err := <-sent; err != ErrStopped {
+		t.Fatalf("Send: %v, want ErrStopped", err)
+	}
+	select {
+	case f := <-l.finished:
+		t.Fatalf("Run reported finished after Stop: %+v", f)
+	case <-time.After(50 * time.Millisecond):
+	}
+}

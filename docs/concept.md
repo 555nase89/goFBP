@@ -131,8 +131,9 @@ inst.Stop()
   Once the channel is full, the function blocks, the Bricks block, the buffers fill up and `Send`
   blocks, too. Count with a `sync.WaitGroup`, or hand Packets to a goroutine of their own instead.
 - `Stop` (or cancelling `ctx`) stops all Bricks immediately and waits for their goroutines.
-  Buffered Packets are lost; a `Send` or `Emit` that is still waiting returns `fbp.ErrStopped`,
-  whatever `ctx` was passed to it.
+  Buffered Packets and Packets being processed are lost, and their Runs are never reported
+  finished (`fbp.WithRunFinished`); a `Send` or `Emit` that is still waiting returns
+  `fbp.ErrStopped`, whatever `ctx` was passed to it.
 
 ### Observing an Instance
 

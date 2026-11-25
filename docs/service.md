@@ -59,6 +59,105 @@ defer s.Stop()
   at once (also from `$SRV`), so the queue group no longer sends it messages. `Stop` must still be
   called.
 
+## JetStream
+
+By default a Service takes its messages from a core NATS queue group: delivery is best effort (see
+[Where Packets can be lost](#where-packets-can-be-lost)). With `service.WithJetStream`, it takes
+them from a JetStream stream instead and acknowledges each message only once its Run is finished:
+
+```go
+s, err := service.Start(ctx, nc, "gofbp/examples/text", net,
+    service.WithJetStream(service.JetStreamConfig{
+        Stream:     "",               // default service.StreamName(base)
+        AckWait:    30 * time.Second, // the default, service.DefaultAckWait
+        MaxDeliver: 5,                // the default, service.DefaultMaxDeliver; -1 = no limit
+        Prefetch:   10,               // the default, service.DefaultPrefetch
+        OnError:    service.ErrorAck, // the default; ErrorNak, ErrorTerm
+        NakDelay:   0,                // with ErrorNak
+        DeadLetter: "",               // subject for messages that failed for good
+        Inports:    nil,              // per Inport: other stream / filter subject
+        Envelope:   false,            // pass subject, sequence and headers along
+    }),
+)
+```
+
+- **Stream.** If the stream does not exist, `Start` creates it: work queue retention, file
+  storage, one replica, subjects `<base>.ip.>`. A stream that exists is used as it is, so an admin
+  can create it beforehand with other settings (replicas, limits, `MaxAge`); it must store the
+  subjects of all Network Inports. With work queue retention a message is removed once it is
+  acknowledged. A message on `<base>.ip.<x>` for an Inport the Network does not have stays in the
+  stream, since no consumer takes it; set `MaxAge` on the stream if that can happen.
+- **Consumers.** One durable pull consumer per Network Inport, `service.ConsumerName(base, inport)`
+  (e.g. `fbp_gofbp_examples_text_pipeline_ip_in_<hash>`), filtered on the Inport subject, with
+  explicit acknowledgement. All Services of the Network share it, so each message reaches one of
+  them, like the queue group. `Start` creates the consumer with `AckWait` and `MaxDeliver` unless it
+  exists; an existing consumer is not changed.
+- **Acknowledgement at the end of the Run.** The Service acknowledges a message when its Run is
+  finished, right after publishing the Done message on the same connection, so the server gets the
+  acknowledgement after all Outputs and the Done message. Several messages with the same Run ID
+  are acknowledged together when that Run is finished. A rejected message (invalid Run ID or JSON)
+  is answered on the Error subject as usual and terminated, so it is not delivered again. A Run that
+  ends with an Error Packet is finished too and, by default, acknowledged (see below).
+- **Failed Runs (`OnError`).** A Run failed when a Packet of it left the Network's Error Outport;
+  connect the Error Outports of the Bricks to it, an unconnected one is only logged. What becomes
+  of the messages of a failed Run:
+  - `ErrorAck` (default): acknowledged like any other; the Error Packet is the only trace.
+  - `ErrorNak`: given back, so JetStream delivers it again after `NakDelay`. Each attempt publishes
+    its Error Packet and Done message again. On the last delivery (`MaxDeliver` of the consumer) the
+    message goes to the Dead letter subject instead.
+  - `ErrorTerm`: goes to the Dead letter subject at once.
+
+  With `ErrorNak` or `ErrorTerm`, a rejected message (invalid Run ID or JSON) goes to the Dead
+  letter subject too instead of being only terminated.
+- **Dead letter.** With `DeadLetter` set, such a message is published there with its data and
+  headers (except the server's control headers `Nats-*`, e.g. `Nats-Msg-Id` or `Nats-Batch-Id`,
+  which would act on the dead letter) plus `Fbp-Error` (the `fbp.ErrorData` without `input`, at most 1 KB), `Fbp-Subject`,
+  `Fbp-Stream`, `Fbp-Sequence` and `Fbp-Delivered`, and terminated once the server confirmed that it
+  stored it. If that fails, the message is given back (Nak) and logged. A stream must store the
+  Dead letter subject; `Start` checks that. Without `DeadLetter`, the message is logged and
+  terminated.
+- **Other streams (`Inports`).** `Inports` gives a Network Inport a stream and filter subject of its
+  own, e.g. `{Stream: "EVENTS", FilterSubject: "events.order.>"}`, so a Network reads an
+  application's event stream directly. Such a stream must exist; the Service never creates or
+  changes it, and only its own consumer is acknowledged, so with limits retention the messages stay
+  in the stream. Every Network gets its own consumer and thus all messages. `FilterSubjects`
+  instead of `FilterSubject` lets one Inport read several subjects through one consumer, e.g.
+  `{Stream: "EVENTS", FilterSubjects: []string{"events.order.>", "events.customer.>"}}`; they must
+  not overlap, and only one of the two fields may be set. The `$SRV` endpoint of such an Inport
+  lists them comma-separated as its subject. A consumer that exists must have the same filter
+  subjects (in any order), otherwise `Start` fails. `Call` and `CallAll` publish on the
+  Inport subject and do not reach such an Inport. The default stream is created only if an Inport
+  reads it.
+- **Envelope.** With `Envelope: true`, the Packet data is a `service.Envelope` instead of the
+  message data: `{"subject", "stream", "sequence", "time", "delivered", "header", "data"}`, with the
+  message data unchanged in `data`. A Brick reads it with `fbp.DataAs[service.Envelope]`. The
+  Dead letter subject gets the original message data, not the Envelope.
+- **Run ID.** A message without `Fbp-Run-Id` gets a new Run ID from the Service before it enters
+  the Network, so an Error Packet of a Run that finishes at once is still matched with its message.
+  A message delivered again gets a new one as well.
+- **Long Runs.** While a message is not acknowledged, the Service tells JetStream every
+  `AckWait/3` that it is still in progress, so a Run may take longer than `AckWait`. Messages
+  fetched ahead (`Prefetch` per Inport) wait in the NATS client and are not reported in progress:
+  `Prefetch` times the time a Packet needs must stay well below `AckWait`, otherwise JetStream
+  delivers them again meanwhile. Lower `Prefetch` or raise `AckWait` for slow Networks.
+- **Backpressure** works through the consumer instead of the pending limits: the Service fetches
+  the next messages only when the Network takes them. Nothing is dropped; `WithPendingLimits` does
+  not apply.
+- **Stop.** `Stop`, or the end of the `ctx` given to `Start`, stops fetching and gives every message
+  not yet acknowledged back to JetStream (Nak), so another Service of the Network gets it at once.
+  Messages the server had already sent but the client had not received yet come back after
+  `AckWait`. After a crash, all of them come back after `AckWait`.
+- **At least once.** A message whose Run did not finish (stop, crash, connection lost) is
+  delivered again, at most `MaxDeliver` times in all. Its Run then starts anew with the same Run ID,
+  so Packets and the Done message of that Run can be published more than once. Clients must
+  tolerate that: `CallAll` returns on the first Done message and may see a Packet twice.
+- **Clients need no change.** The stream stores the messages that `Call`, `CallAll`, `fbpcli` or
+  `nats pub` publish on the Inport subjects. A client that wants the server to confirm that a
+  message is stored publishes with `jetstream.JetStream.PublishMsg` instead.
+- **Do not mix the modes.** A Service without `WithJetStream` on the same Network would get the
+  messages from its queue subscription in addition to the stream, so they would be processed twice.
+- Observe, trace, Done, Outport, Log and `$SRV` subjects stay core NATS.
+
 ## Calling a Service
 
 The client creates the Run ID. Only then can it subscribe to the results of its Run before they are
@@ -131,12 +230,12 @@ Networks and their instances.
 | `name` | Base subject with every character other than letters, digits, `-` and `_` replaced by `_`, plus `_` and the first 8 hex digits of the SHA-256 of the base subject, so that e.g. `fbp.a_b.c` and `fbp.a.b_c` get different names (`service.ServiceName`), e.g. `fbp_gofbp_examples_text_pipeline_bf241440` |
 | `id` | `s.ID()`, the same ID as `service` in `EventData` |
 | `version` | `WithVersion`, default `0.0.0` |
-| `metadata` | `package`, `network`, `base`, `inports` (comma-separated, including In), `outports` (comma-separated, including Success and Error), `trace`, `log` (Log subject of this Service) |
-| `endpoints` | `in` (subject of Inport `In`), one endpoint named after each extra Inport (its subject), all with queue group = base subject, and `observe` (no queue group) |
+| `metadata` | `package`, `network`, `base`, `inports` (comma-separated, including In), `outports` (comma-separated, including Success and Error), `trace`, `log` (Log subject of this Service), `stream` (with JetStream only) |
+| `endpoints` | `in` (subject of Inport `In`), one endpoint named after each extra Inport (its subject), all with queue group = base subject (none with JetStream; the endpoint metadata `consumer` then names the consumer), and `observe` (no queue group) |
 
 `$SRV.STATS` counts per endpoint: for each Inport endpoint, received messages and errors (invalid
 JSON, Packet not delivered); its `data` is `service.InportStats` with the messages dropped by the
-pending limits, and for `in` also the Packets published per Outport (for all Inports together). The `data` of
+pending limits, the messages JetStream delivered more than once (`redelivered`), and for `in` also the Packets published per Outport (for all Inports together). The `data` of
 the `observe` endpoint is `service.ObserveStats` (`{"observing":true|false}`): whether the Service
 currently publishes Events on the Trace subject. A local Observer set with `s.SetObserver` counts as
 off. Brick errors are not Inport errors; they show up as Packets on
@@ -218,6 +317,18 @@ subscribe: [ "fbp.gofbp.examples.text.pipeline.>", "$SRV.>" ]
 allow_responses: true   # replies to $SRV and Log history requests
 ```
 
+A Service with JetStream additionally needs the JetStream API and the acknowledgements, e.g. for
+the default stream name:
+
+```
+publish:   [ "$JS.API.STREAM.INFO.<stream>", "$JS.API.STREAM.CREATE.<stream>",
+             "$JS.API.CONSUMER.>", "$JS.ACK.<stream>.>" ]
+subscribe: [ "_INBOX.>" ]
+```
+
+Whoever may publish on `<base>.ip.>` can fill the stream; limit it with the stream's limits
+(`MaxMsgs`, `MaxBytes`, `MaxAge`).
+
 The connection is configured with `natscon.Config`: `nkeyfile` for authentication and `tls`
 (`cafile`, `certfile`, `keyfile`) for TLS. As soon as one TLS file is set, the connection must use
 TLS 1.2 or newer; `cafile` verifies the server instead of the system roots, `certfile` and
@@ -238,8 +349,14 @@ deadlock described in [concept.md](concept.md#running-an-instance) cannot happen
 
 The pending limits are kept far below the NATS client defaults (500,000 messages / 64 MB) so that
 an overloaded Service starts dropping and logging early instead of hoarding messages. `natscon.Connect`
-additionally logs all async errors of the connection. Reliable delivery would need JetStream with
-per-message acknowledgement; this is not part of goFBP.
+additionally logs all async errors of the connection.
+
+With [JetStream](#jetstream), the first and the last row no longer lose input: the Service fetches
+only what the Network takes, and messages whose Run did not finish are delivered again. Results
+can still be lost: an Outport or Done message whose publish fails (reconnect buffer full, payload
+too large) is logged, and the message may be acknowledged anyway when the acknowledgement gets
+through later. A message is also acknowledged when a Packet of its Run was lost on an unconnected
+Outport, since that is how the Network is built. Delivery is then at least once, not exactly once.
 
 ## Running the example
 

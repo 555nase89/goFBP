@@ -100,12 +100,18 @@ func TestNestedNetworkInport(t *testing.T) {
 
 	obs, evs := observed()
 	fn, ch := collector()
-	inst := start(t, outer, WithOutput(fn))
+	log := newRunLog()
+	inst := start(t, outer, WithOutput(fn), WithRunFinished(log.runFinished))
 
-	_, err := inst.Send(context.Background(), Packet{Data: str("a")})
+	first, err := inst.Send(context.Background(), Packet{Data: str("a")})
 	must(t, err)
 	if o := next(t, ch); string(o.p.Data) != `"A"` {
 		t.Fatalf("In: got %s", o.p.Data)
+	}
+	// The Output comes before the Brick has returned; only the end of the
+	// Run guarantees that its Processed Event does not reach obs.
+	if f := log.next(t); f.runID != first {
+		t.Fatalf("finished Run %s, want %s", f.runID, first)
 	}
 
 	inst.SetObserver(obs)

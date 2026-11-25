@@ -110,12 +110,45 @@
   the Packet (unexported `Packet.redact`), each Brick once, fails closed. Packets and results keep
   the real data. Tests `pkg/fbp/redact_test.go`, `pkg/service/redact_test.go`. Prompted by automat-ai,
   where a GCP service-account key in the payload reached `ErrorData` and the Trace.
+- JetStream for the Inports (2026-11-22): `service.WithJetStream(JetStreamConfig)` takes the
+  messages from a stream (created if missing: work queue, `<base>.ip.>`, `StreamName`) through one
+  shared durable pull consumer per Inport (`ConsumerName`) instead of the queue group. A message is
+  acknowledged after the Done message of its Run, rejected ones are terminated, Runs going on are
+  reported in progress every `AckWait/3`, and on `Stop` / end of `ctx` unacknowledged messages are
+  given back (Nak). `InportStats.Redelivered`, `$SRV` metadata `stream` / `consumer`. At least once:
+  a Run may be processed and published more than once. Tests with an embedded JetStream server.
+- Fix in `pkg/fbp` (2026-11-22): a Run whose Packet was being processed when the Instance stopped,
+  or whose `Send` failed with `ErrStopped`, was reported finished; now it never finishes, as
+  documented (`TestRunNotFinishedOnStop`, `TestRunNotFinishedOnStopDuringSend`). Before, a Service
+  published a Done message for a Run cut off by `Stop`.
+- Fix flaky `TestNestedNetworkInport` (2026-11-22, #4): it switched the Observer on after the
+  Output of the first Run, while that Run's last Brick could still report `Processed`. It now waits
+  for the end of the Run (`WithRunFinished`) first.
+- JetStream for event sourcing (2026-11-22): `JetStreamConfig.OnError` (`ErrorAck` default,
+  `ErrorNak` with `NakDelay`, `ErrorTerm`) and `DeadLetter` (original data and headers plus
+  `Fbp-Error`, `Fbp-Subject`, `Fbp-Stream`, `Fbp-Sequence`, `Fbp-Delivered`; terminated after the
+  PubAck); `Inports` with `InportSource` (own stream and filter subject, stream only read, default
+  stream created only if used, consumer filter checked); `Envelope`. The Service sets a missing Run
+  ID before `receive`, `acks.entering` keeps the Error Packet of a Run that finished before `sent`.
+  `$SRV` endpoints report the filter subject and stream. Services without JetStream unchanged
+  (`publish` stays their `OutputFunc`).
+- `InportSource.FilterSubjects` (2026-11-22): one Inport reads several subjects of a stream through
+  one consumer (`ConsumerConfig.FilterSubjects`); exclusive with `FilterSubject`; an existing
+  consumer must have the same set in any order; `$SRV` lists them comma-separated. Removed the
+  stale "Open" entry of the flaky `TestNestedNetworkInport`, fixed in #5.
+- Fix dead letters of messages with control headers (2026-11-22): `deadLetter` copied all headers
+  of the original, so a message stored by an atomic batch (`Nats-Batch-Id`) made the server reject
+  the dead letter (10174, atomic publish disabled) and the message was dropped after `MaxDeliver`;
+  a `Nats-Msg-Id` would drop a second dead letter of the same message as duplicate. Headers `Nats-*`
+  are no longer copied.
 - `fbpcli -json` (2026-11-25): prints the Packets of a Run once it has ended as one JSON object
   `{"<Outport>": [<data>, …]}` (`cli.RunJSON`), also with the Packets received before a failure.
 
 ## Open
 - Redaction of `Sent`: data entering via `Send` carries no Redaction. If secrets ever enter a
   Network from outside, add a Network-level redact function (e.g. `Network.Redact`).
+- `docs/service-package.svg` does not show `ErrorPolicy`, `InportSource`, `Envelope` and the Dead
+  letter subject yet.
 - Further test ideas: Network coverage via the Observer (Nodes/Outports never reached), generic
   fuzz invariants (every Run finishes, no Packet lost), replacing a Node by a stub, SVG drift check.
 - `nats micro stats` always shows Processing Time 0s: the Service does not measure it. Decide whether

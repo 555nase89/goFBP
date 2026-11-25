@@ -18,6 +18,10 @@
 //   - When the ctx given to Start is done, the Instance stops and the Service
 //     unsubscribes at once, so the queue group stops sending it messages.
 //     Messages that arrive in between are discarded.
+//
+// With WithJetStream, the Service takes its messages from a JetStream stream
+// instead and acknowledges each one when its Run is finished; a message
+// whose Run did not finish is delivered again instead of being lost.
 package service
 
 import (
@@ -35,6 +39,7 @@ import (
 	"github.com/555nase89/goFBP/pkg/fbp"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // RunIDHeader is the NATS header carrying a Packet's Run ID. Like all NATS
@@ -74,6 +79,7 @@ type config struct {
 	netOpts      []fbp.Option
 	logLevel     slog.Level
 	logHistory   int
+	js           *JetStreamConfig // nil: core NATS queue group
 }
 
 // WithLogger sets the logger of the Service and its Instance. The Service
@@ -98,7 +104,7 @@ func WithLogHistory(n int) Option {
 
 // WithPendingLimits sets how many messages and bytes may wait in the NATS
 // client for each Network Inport before further messages are dropped. A
-// value of -1 means no limit.
+// value of -1 means no limit. It does not apply with WithJetStream.
 func WithPendingLimits(msgs, bytes int) Option {
 	return func(c *config) { c.pendingMsgs, c.pendingBytes = msgs, bytes }
 }
@@ -132,6 +138,17 @@ type Service struct {
 	stopCtxWatch func() bool // stops the context.AfterFunc set by Start
 	unsubOnce    sync.Once
 	unsubErr     error
+
+	// Only with WithJetStream, see jetstream.go.
+	js           jetstream.JetStream
+	jsc          *JetStreamConfig // with the defaults applied
+	stream       string           // name of the default stream, if an Inport reads it
+	acks         *acks            // messages not yet acknowledged
+	maxDeliver   map[string]int   // MaxDeliver by consumer name
+	deadLetters  sync.WaitGroup   // messages on their way to the Dead letter subject
+	pulls        sync.WaitGroup   // one pull goroutine per Network Inport
+	progressStop chan struct{}    // stops the progress goroutine
+	releaseOnce  sync.Once
 }
 
 // Subject returns the base subject fbp.<packagepath>.<networkname>. Every
@@ -217,7 +234,7 @@ type EventData struct {
 }
 
 // Start starts an Instance of net and subscribes to the subjects of its
-// Inports. packagePath is the Go package path of the Network, e.g.
+// Inports, or with WithJetStream binds them to their JetStream consumers. packagePath is the Go package path of the Network, e.g.
 // "gofbp/examples/text". Every Inport and Outport name of net must be a valid
 // subject token as well. An extra Inport must not be named "in", the subject
 // token of fbp.In, nor "observe", the name of the Observe endpoint on $SRV. Observing is off unless switched on by a message on the
@@ -253,12 +270,16 @@ func Start(ctx context.Context, nc *nats.Conn, packagePath string, net *fbp.Netw
 	s.stats.inports = map[string]*inportCounters{}
 	for _, name := range append([]string{fbp.In}, net.Inports...) {
 		if s.stats.inports[name] == nil {
-			s.inports = append(s.inports, &inport{name: name})
+			s.inports = append(s.inports, &inport{name: name, subject: InportSubjectFor(base, name)})
 			s.stats.inports[name] = &inportCounters{}
 		}
 	}
 
-	netOpts := append(cfg.netOpts, fbp.WithLogger(s.logger), fbp.WithOutput(s.publish), fbp.WithRunFinished(s.finish))
+	output := s.publish
+	if cfg.js != nil {
+		output = s.output
+	}
+	netOpts := append(cfg.netOpts, fbp.WithLogger(s.logger), fbp.WithOutput(output), fbp.WithRunFinished(s.finish))
 	if s.inst, err = net.Start(ctx, netOpts...); err != nil {
 		return nil, err
 	}
@@ -267,7 +288,13 @@ func Start(ctx context.Context, nc *nats.Conn, packagePath string, net *fbp.Netw
 	if err == nil {
 		s.logSub, err = nc.Subscribe(LogHistorySubject(base, s.id), sink.handleHistory)
 	}
+	if err == nil && cfg.js != nil {
+		err = s.startJetStream(ctx, *cfg.js)
+	}
 	for _, in := range s.inports {
+		if cfg.js != nil {
+			break
+		}
 		if err == nil {
 			in.sub, err = nc.QueueSubscribe(InportSubjectFor(base, in.name), base, func(msg *nats.Msg) { s.handle(ctx, in, msg) })
 		}
@@ -304,11 +331,15 @@ func Start(ctx context.Context, nc *nats.Conn, packagePath string, net *fbp.Netw
 			if in.sub != nil {
 				in.sub.Unsubscribe()
 			}
+			if in.msgs != nil {
+				in.msgs.Stop()
+			}
 		}
 		if s.disc != nil {
 			s.disc.stop()
 		}
 		s.inst.Stop()
+		s.release()
 		return nil, err
 	}
 	// The Instance stops with ctx; without unsubscribing, the Service would
@@ -317,6 +348,7 @@ func Start(ctx context.Context, nc *nats.Conn, packagePath string, net *fbp.Netw
 		if err := s.unsubscribe(); err != nil {
 			s.logger.Warn("service: unsubscribe failed", "base", s.base, "error", err)
 		}
+		s.release()
 		s.logger.Info("service: context done, unsubscribed", "base", s.base)
 	})
 	return s, nil
@@ -396,9 +428,13 @@ func truncate(s string, n int) string {
 
 // inport is the subscription of one Network Inport.
 type inport struct {
-	name    string // name of the Network Inport
-	sub     *nats.Subscription
-	dropped int // last value of sub.Dropped() that was logged; used by handle only
+	name     string                    // name of the Network Inport
+	sub      *nats.Subscription        // core NATS; nil with WithJetStream
+	msgs     jetstream.MessagesContext // WithJetStream only
+	subject  string                    // subject of the Inport, or with WithJetStream the filter subject of its consumer
+	stream   string                    // name of the stream of its consumer, WithJetStream only
+	consumer string                    // name of the JetStream consumer, WithJetStream only
+	dropped  int                       // last value of sub.Dropped() that was logged; used by handle only
 }
 
 // Logger returns the logger of the Service: records go to the logger given
@@ -421,29 +457,49 @@ func (s *Service) ID() string { return s.id }
 // msg.Sub instead.
 func (s *Service) handle(ctx context.Context, in *inport, msg *nats.Msg) {
 	s.logDropped(in, msg.Sub)
+	s.receive(ctx, in, msg.Subject, msg.Header, msg.Data)
+}
+
+// outcome is what became of a message passed to receive.
+type outcome int
+
+const (
+	delivered    outcome = iota // the Packet entered the Network
+	rejected                    // answered on the Error subject instead
+	notDelivered                // the Instance stopped or ctx is done
+)
+
+// receive passes the data of a message on the subject of the Network Inport
+// in to the Instance. It blocks while the Instance's Inport buffers are
+// full. It returns the Run ID the Packet entered the Network with.
+func (s *Service) receive(ctx context.Context, in *inport, subject string, header nats.Header, data []byte) (string, outcome) {
 	s.stats.mu.Lock()
 	s.stats.inports[in.name].received++
 	s.stats.mu.Unlock()
-	runID := msg.Header.Get(RunIDHeader)
+	runID := header.Get(RunIDHeader)
 	if runID != "" && (len(runID) > MaxRunIDLength || !validToken(runID)) {
 		reason := fmt.Sprintf("run ID %q is not a valid subject token of at most %d bytes", truncate(runID, MaxRunIDLength), MaxRunIDLength)
 		s.reject(ctx, in.name, reason, fbp.NewRunID())
-		return
+		return "", rejected
 	}
-	if !json.Valid(msg.Data) {
+	if !json.Valid(data) {
 		// A Run going on is not touched: its Done message would come too
 		// early, and a caller counting its Packets would stop short.
 		if runID == "" || s.inst.RunGoingOn(runID) {
 			runID = fbp.NewRunID()
 		}
 		s.reject(ctx, in.name, "packet data is not valid JSON", runID)
-		return
+		return "", rejected
 	}
-	_, err := s.inst.SendTo(ctx, in.name, fbp.Packet{Data: msg.Data, RunID: runID})
-	if err != nil && !errors.Is(err, fbp.ErrStopped) {
-		s.stats.inError(in.name, "packet not delivered: "+err.Error())
-		s.logger.Warn("service: packet not delivered", "subject", msg.Subject, "run_id", runID, "error", err)
+	sent, err := s.inst.SendTo(ctx, in.name, fbp.Packet{Data: data, RunID: runID})
+	if err != nil {
+		if !errors.Is(err, fbp.ErrStopped) {
+			s.stats.inError(in.name, "packet not delivered: "+err.Error())
+			s.logger.Warn("service: packet not delivered", "subject", subject, "run_id", runID, "error", err)
+		}
+		return "", notDelivered
 	}
+	return sent, delivered
 }
 
 // reject counts an error of the Network Inport inport and publishes it as an
@@ -487,7 +543,9 @@ func (s *Service) publish(_ context.Context, outport string, p fbp.Packet) {
 }
 
 // finish is the fbp.RunFinishedFunc of the Instance. It publishes on the same
-// connection as publish, after all Outputs of the Run.
+// connection as publish, after all Outputs of the Run. With WithJetStream it
+// then acknowledges the messages of the Run, on the same connection, so the
+// server gets the acknowledgement after the Outputs and the Done message.
 func (s *Service) finish(runID string, outputs int) {
 	msg := nats.NewMsg(DoneSubject(s.base, runID))
 	msg.Data, _ = json.Marshal(DoneData{Outputs: outputs})
@@ -495,15 +553,19 @@ func (s *Service) finish(runID string, outputs int) {
 	if err := s.nc.PublishMsg(msg); err != nil {
 		s.logger.Error("service: publish failed, run end lost", "subject", msg.Subject, "run_id", runID, "error", err)
 	}
+	ms, errData := s.acks.finished(runID)
+	s.settleRun(runID, ms, errData)
 }
 
 // Stop unsubscribes, also from $SRV, stops the Instance and flushes published Packets.
 // Messages not yet passed to the Network and Packets not yet processed are
-// lost.
+// lost. With WithJetStream, the messages of Runs that did not finish are
+// given back to JetStream instead and delivered again.
 func (s *Service) Stop() error {
 	s.stopCtxWatch()
 	err := s.unsubscribe()
 	s.inst.Stop()
+	s.release()
 	if ferr := s.nc.Flush(); ferr != nil && !errors.Is(ferr, nats.ErrConnectionClosed) {
 		err = errors.Join(err, ferr)
 	}
@@ -517,7 +579,14 @@ func (s *Service) unsubscribe() error {
 	s.unsubOnce.Do(func() {
 		errs := []error{s.obsSub.Unsubscribe(), s.logSub.Unsubscribe(), s.disc.stop()}
 		for _, in := range s.inports {
-			errs = append(errs, in.sub.Unsubscribe())
+			if in.sub != nil {
+				errs = append(errs, in.sub.Unsubscribe())
+			}
+			if in.msgs != nil {
+				// Messages already fetched still reach the pull goroutine;
+				// release gives back those the Network does not finish.
+				in.msgs.Drain()
+			}
 		}
 		s.unsubErr = errors.Join(errs...)
 	})

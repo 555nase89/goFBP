@@ -30,4 +30,4 @@ Use the glossary terms exactly, in code and prose. Each term lists the alternati
   Runtime state belongs to `Instance`.
 - Packet data is always valid JSON; `Send`/`Emit` copy it. Keep both invariants when touching them.
 - `pkg/service` tests start an embedded nats-server, so no external NATS is needed for
-  `/snap/go/current/bin/go test ./...`.
+  `go test ./...`.
