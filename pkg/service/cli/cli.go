@@ -1,6 +1,6 @@
 // Package cli is the logic of the command fbpcli: it sends one input to the
 // Inport of a Network that runs as a Service and prints every Packet of the
-// Run together with the name of its Outport.
+// Run together with the name of its Outport, as lines or as one JSON object.
 package cli
 
 import (
@@ -55,23 +55,52 @@ func ReadInput(input string, stdin io.Reader, asString bool) ([]byte, error) {
 // announces the end of the Run. With first it stops after the first Packet.
 // It returns the Outports of the Packets in the order they arrived.
 func Run(ctx context.Context, nc *nats.Conn, base, inport string, data []byte, w io.Writer, first bool) ([]string, error) {
-	var outports []string
 	var werr error
-	write := func(outport string, p fbp.Packet) {
-		outports = append(outports, outport)
+	outports, err := call(ctx, nc, base, inport, data, first, func(outport string, p fbp.Packet) {
 		if werr == nil {
 			_, werr = fmt.Fprintf(w, "%s %s\n", outport, p.Data)
 		}
+	})
+	if err != nil {
+		return outports, err
+	}
+	return outports, werr
+}
+
+// RunJSON works like Run, but writes the Packets of the Run once the Run has
+// ended as a single JSON object that maps each Outport to the list of its
+// Packet data, in the order they arrived, followed by a newline:
+// {"<Outport>": [<data>, ...], ...}. The list is an array even for one Packet;
+// a Run without Packets gives {}. When the Run fails, e.g. on a timeout, the
+// Packets received so far are still written and the error is returned.
+func RunJSON(ctx context.Context, nc *nats.Conn, base, inport string, data []byte, w io.Writer, first bool) ([]string, error) {
+	results := map[string][]json.RawMessage{}
+	outports, err := call(ctx, nc, base, inport, data, first, func(outport string, p fbp.Packet) {
+		results[outport] = append(results[outport], p.Data)
+	})
+	if werr := json.NewEncoder(w).Encode(results); err == nil {
+		err = werr
+	}
+	return outports, err
+}
+
+// call sends data to the Network and passes every Packet of the Run to fn.
+// It returns the Outports of the Packets in the order they arrived.
+func call(ctx context.Context, nc *nats.Conn, base, inport string, data []byte, first bool, fn func(string, fbp.Packet)) ([]string, error) {
+	var outports []string
+	handle := func(outport string, p fbp.Packet) {
+		outports = append(outports, outport)
+		fn(outport, p)
 	}
 	var err error
 	if first {
 		var outport string
 		var p fbp.Packet
 		if outport, p, err = service.CallTo(ctx, nc, base, inport, data); err == nil {
-			write(outport, p)
+			handle(outport, p)
 		}
 	} else {
-		err = service.CallAllTo(ctx, nc, base, inport, data, write)
+		err = service.CallAllTo(ctx, nc, base, inport, data, handle)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		if len(outports) > 0 {
@@ -79,8 +108,5 @@ func Run(ctx context.Context, nc *nats.Conn, base, inport string, data []byte, w
 		}
 		return nil, fmt.Errorf("cli: no result within timeout (is a Service of %s running?)", base)
 	}
-	if err != nil {
-		return outports, err
-	}
-	return outports, werr
+	return outports, err
 }

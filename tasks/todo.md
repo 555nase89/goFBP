@@ -110,6 +110,8 @@
   the Packet (unexported `Packet.redact`), each Brick once, fails closed. Packets and results keep
   the real data. Tests `pkg/fbp/redact_test.go`, `pkg/service/redact_test.go`. Prompted by automat-ai,
   where a GCP service-account key in the payload reached `ErrorData` and the Trace.
+- `fbpcli -json` (2026-11-25): prints the Packets of a Run once it has ended as one JSON object
+  `{"<Outport>": [<data>, …]}` (`cli.RunJSON`), also with the Packets received before a failure.
 
 ## Open
 - Redaction of `Sent`: data entering via `Send` carries no Redaction. If secrets ever enter a

@@ -104,13 +104,19 @@ Packet of the Run as `<Outport> <data>`, one per line, until the Run is finished
 after the first Packet (`service.Call`). The Network is given as `<packagepath>/<networkname>`; the input as
 JSON with `-input`, or read from stdin when `-input` is empty or `-`. `-string` sends the input as a
 JSON string. `-inport` names the Network Inport to send to (default `In`). The NATS connection comes from `config.json` (see `example.json`), `-timeout`
-(default 10s) limits the wait. Exit status is 1 on failure or when a Packet left through `Error`.
+(default 10s) limits the wait. `-json` prints the Packets instead as one JSON object
+`{"<Outport>": [<data>, …], …}` once the Run has ended (`cli.RunJSON`): each Outport maps to the list of
+its Packet data in the order they arrived, an array even for one Packet; Outports are sorted by
+name, `{}` without Packets; on failure the Packets received so far are still printed. Exit status is 1 on failure or
+when a Packet left through `Error`.
 
 ```sh
 fbpcli -network gofbp/examples/text/pipeline -string -input "  hello "
 Success "HELLO!"
 echo '42' | fbpcli -network gofbp/examples/text/pipeline
 Error {"node":"trim","brick":"Trim","message":"input is not a JSON string","input":42}
+fbpcli -network gofbp/examples/text/pipeline -string -input "  hello " -json
+{"Success":["HELLO!"]}
 ```
 
 ## Discovery ($SRV)
